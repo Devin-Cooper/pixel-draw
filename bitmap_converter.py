@@ -1,6 +1,7 @@
+# Import required libraries
 from PIL import Image
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import ttk, filedialog
 import math
 
 # Unit conversion functions
@@ -10,28 +11,24 @@ def mm_to_inches(mm):
 def inches_to_mm(inches):
    return inches * 25.4
 
-# Calculate pixel size to fit within specified document dimensions
+# Calculate pixel size that fits within document dimensions
 def get_pixel_size_from_doc_size(doc_width_mm, doc_height_mm, pixel_width, pixel_height):
    width_pixel_size = doc_width_mm / pixel_width
    height_pixel_size = doc_height_mm / pixel_height
-   return min(width_pixel_size, height_pixel_size)  # Use smallest size to fit within bounds
+   return min(width_pixel_size, height_pixel_size)
 
-# Calculate final document dimensions based on pixel size
+# Get final output dimensions in mm
 def get_output_dimensions(width, height, pixel_size_mm):
    width_mm = width * pixel_size_mm
    height_mm = height * pixel_size_mm
    return width_mm, height_mm
 
-# Generate zigzag pattern points for a pixel square
+# Generate zigzag pattern within pixel boundaries
 def create_zigzag_path(x, y, width, height, stroke_width, angle):
    angle_rad = math.radians(angle)
-   spacing = stroke_width  # Space lines by stroke width to avoid overlap
-   
-   # Calculate number of lines needed to fill space
+   spacing = stroke_width
    diagonal = math.sqrt(width**2 + height**2)
    num_lines = int(diagonal / spacing) + 1
-   
-   # Calculate perpendicular vector for offset
    perp_vector = (-math.sin(angle_rad), math.cos(angle_rad))
    
    path = []
@@ -39,33 +36,25 @@ def create_zigzag_path(x, y, width, height, stroke_width, angle):
        offset = i * spacing
        start_x = x + offset * perp_vector[0]
        start_y = y + offset * perp_vector[1]
-       
-       # Calculate end point at angle
        end_x = start_x + width * math.cos(angle_rad)
        end_y = start_y + width * math.sin(angle_rad)
-       
-       # Clip line to pixel bounds
        points = clip_line_to_rect(start_x, start_y, end_x, end_y, x, y, width, height)
        if points:
            path.append(points)
-   
    return path
 
 # Line clipping helper functions
 def clip_line_to_rect(x1, y1, x2, y2, rx, ry, rw, rh):
    if not line_rect_intersect(x1, y1, x2, y2, rx, ry, rw, rh):
        return None
-       
    if x1 < rx: x1, y1 = intersect_vertical(x1, y1, x2, y2, rx)
    if x1 > rx + rw: x1, y1 = intersect_vertical(x1, y1, x2, y2, rx + rw)
    if y1 < ry: x1, y1 = intersect_horizontal(x1, y1, x2, y2, ry)
    if y1 > ry + rh: x1, y1 = intersect_horizontal(x1, y1, x2, y2, ry + rh)
-   
    if x2 < rx: x2, y2 = intersect_vertical(x1, y1, x2, y2, rx)
    if x2 > rx + rw: x2, y2 = intersect_vertical(x1, y1, x2, y2, rx + rw)
    if y2 < ry: x2, y2 = intersect_horizontal(x1, y1, x2, y2, ry)
    if y2 > ry + rh: x2, y2 = intersect_horizontal(x1, y1, x2, y2, ry + rh)
-   
    return (x1, y1, x2, y2)
 
 def line_rect_intersect(x1, y1, x2, y2, rx, ry, rw, rh):
@@ -84,14 +73,11 @@ def intersect_horizontal(x1, y1, x2, y2, y):
 
 # Main SVG generation function
 def bitmap_to_svg(input_file, output_file, pixel_size_mm, stroke_width_mm, angle=None):
-   # Open and convert image to 1-bit bitmap
    img = Image.open(input_file).convert('1')
    width, height = img.size
-   
-   # Convert measurements from mm to points (72dpi)
    pixel_size = (pixel_size_mm / 25.4) * 72
    stroke_width = (stroke_width_mm / 25.4) * 72
-   inset = stroke_width / 2  # Inset boxes by half stroke width
+   inset = stroke_width / 2
    
    with open(output_file, 'w') as f:
        # Write SVG header
@@ -102,18 +88,18 @@ def bitmap_to_svg(input_file, output_file, pixel_size_mm, stroke_width_mm, angle
        # Process each pixel
        for y in range(height):
            for x in range(width):
-               if img.getpixel((x,y)) == 0:  # Black pixel
+               if img.getpixel((x,y)) == 0:
                    px = x * pixel_size + inset
                    py = y * pixel_size + inset
                    pwidth = pixel_size - stroke_width
                    pheight = pixel_size - stroke_width
                    
-                   # Always draw the pixel outline
+                   # Draw pixel outline
                    f.write(f'  <rect x="{px}" y="{py}" '
                           f'width="{pwidth}" height="{pheight}" '
                           f'fill="none" stroke="black" stroke-width="{stroke_width}"/>\n')
                    
-                   # Add zigzag pattern if specified
+                   # Add zigzag if specified
                    if angle is not None:
                        paths = create_zigzag_path(px, py, pwidth, pheight, stroke_width, angle)
                        for p in paths:
@@ -121,63 +107,158 @@ def bitmap_to_svg(input_file, output_file, pixel_size_mm, stroke_width_mm, angle
                                   f'stroke="black" stroke-width="{stroke_width}" />\n')
        f.write('</svg>')
 
-# Main program
-def main():
-   root = tk.Tk()
-   root.withdraw()  # Hide the tk window
-   input_file = filedialog.askopenfilename(filetypes=[("Image files", "*.bmp *.gif")])
-
-   if input_file:
-       img = Image.open(input_file)
-       width, height = img.size
-       print(f"\nInput image dimensions: {width}x{height} pixels")
+# GUI Class
+class BitmapConverterGUI:
+   def __init__(self):
+       self.root = tk.Tk()
+       self.root.title("Bitmap to SVG Converter")
+       self.setup_gui()
+   
+   # Setup GUI components    
+   def setup_gui(self):
+       # File selection frame
+       file_frame = ttk.LabelFrame(self.root, text="Input File", padding="5 5 5 5")
+       file_frame.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
        
-       while True:
-           # Get size input method
-           size_type = input("\nEnter (p) for pixel size or (d) for document size: ").lower()
-           if size_type not in ['p', 'd']:
-               print("Please enter either 'p' or 'd'")
-               continue
-
-           # Get measurement units
-           units = input("\nEnter units (mm/in): ").lower()
-           if units not in ['mm', 'in']:
-               print("Please enter either 'mm' or 'in'")
-               continue
-               
-           # Calculate pixel size based on input method
-           if size_type == 'p':
-               size = float(input(f"\nEnter pixel size ({units}): "))
-               pixel_size_mm = size if units == 'mm' else inches_to_mm(size)
+       self.file_path = tk.StringVar()
+       ttk.Label(file_frame, textvariable=self.file_path).grid(row=0, column=0, padx=5)
+       ttk.Button(file_frame, text="Browse", command=self.choose_file).grid(row=0, column=1)
+       
+       # Size settings frame
+       size_frame = ttk.LabelFrame(self.root, text="Size Settings", padding="5 5 5 5")
+       size_frame.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+       
+       # Size type radio buttons
+       self.size_type = tk.StringVar(value="pixel")
+       ttk.Radiobutton(size_frame, text="Pixel Size", variable=self.size_type, 
+                      value="pixel", command=self.toggle_size_inputs).grid(row=0, column=0)
+       ttk.Radiobutton(size_frame, text="Document Size", variable=self.size_type,
+                      value="document", command=self.toggle_size_inputs).grid(row=0, column=1)
+       
+       # Units radio buttons
+       self.units = tk.StringVar(value="mm")
+       ttk.Radiobutton(size_frame, text="mm", variable=self.units,
+                      value="mm").grid(row=1, column=0)
+       ttk.Radiobutton(size_frame, text="inches", variable=self.units,
+                      value="in").grid(row=1, column=1)
+       
+       # Pixel size input frame
+       self.pixel_size_frame = ttk.Frame(size_frame)
+       self.pixel_size_frame.grid(row=2, column=0, columnspan=2)
+       ttk.Label(self.pixel_size_frame, text="Pixel Size:").grid(row=0, column=0)
+       self.pixel_size = ttk.Entry(self.pixel_size_frame, width=10)
+       self.pixel_size.grid(row=0, column=1)
+       
+       # Document size input frame
+       self.doc_size_frame = ttk.Frame(size_frame)
+       ttk.Label(self.doc_size_frame, text="Width:").grid(row=0, column=0)
+       self.doc_width = ttk.Entry(self.doc_size_frame, width=10)
+       self.doc_width.grid(row=0, column=1)
+       ttk.Label(self.doc_size_frame, text="Height:").grid(row=1, column=0)
+       self.doc_height = ttk.Entry(self.doc_size_frame, width=10)
+       self.doc_height.grid(row=1, column=1)
+       
+       # Stroke settings frame
+       stroke_frame = ttk.LabelFrame(self.root, text="Stroke Settings", padding="5 5 5 5")
+       stroke_frame.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+       
+       ttk.Label(stroke_frame, text="Stroke Width:").grid(row=0, column=0)
+       self.stroke_width = ttk.Entry(stroke_frame, width=10)
+       self.stroke_width.grid(row=0, column=1)
+       
+       # Fill type radio buttons
+       self.fill_type = tk.StringVar(value="solid")
+       ttk.Radiobutton(stroke_frame, text="Solid", variable=self.fill_type,
+                      value="solid", command=self.toggle_angle).grid(row=1, column=0)
+       ttk.Radiobutton(stroke_frame, text="Zigzag", variable=self.fill_type,
+                      value="zigzag", command=self.toggle_angle).grid(row=1, column=1)
+       
+       # Angle input frame
+       self.angle_frame = ttk.Frame(stroke_frame)
+       ttk.Label(self.angle_frame, text="Angle (degrees):").grid(row=0, column=0)
+       self.angle = ttk.Entry(self.angle_frame, width=10)
+       self.angle.grid(row=0, column=1)
+       
+       # Convert button
+       ttk.Button(self.root, text="Convert", command=self.convert).grid(row=3, column=0, pady=10)
+       
+       self.toggle_size_inputs()
+       self.toggle_angle()
+   
+   # File chooser dialog
+   def choose_file(self):
+       filename = filedialog.askopenfilename(filetypes=[("Image files", "*.bmp *.gif")])
+       if filename:
+           self.file_path.set(filename)
+   
+   # Toggle between pixel and document size inputs        
+   def toggle_size_inputs(self):
+       if self.size_type.get() == "pixel":
+           self.pixel_size_frame.grid()
+           self.doc_size_frame.grid_remove()
+       else:
+           self.pixel_size_frame.grid_remove()
+           self.doc_size_frame.grid()
+   
+   # Toggle angle input visibility        
+   def toggle_angle(self):
+       if self.fill_type.get() == "zigzag":
+           self.angle_frame.grid(row=2, column=0, columnspan=2)
+       else:
+           self.angle_frame.grid_remove()
+   
+   # Handle conversion process        
+   def convert(self):
+       try:
+           # Validate input file
+           input_file = self.file_path.get()
+           if not input_file:
+               tk.messagebox.showerror("Error", "Please select an input file")
+               return
+           
+           # Get units and stroke width    
+           units = self.units.get()
+           stroke_width = float(self.stroke_width.get())
+           
+           # Get pixel size based on input method
+           if self.size_type.get() == "pixel":
+               pixel_size = float(self.pixel_size.get())
            else:
-               width_size = float(input(f"\nEnter document width ({units}): "))
-               height_size = float(input(f"Enter document height ({units}): "))
-               doc_width_mm = width_size if units == 'mm' else inches_to_mm(width_size)
-               doc_height_mm = height_size if units == 'mm' else inches_to_mm(height_size)
-               pixel_size_mm = get_pixel_size_from_doc_size(doc_width_mm, doc_height_mm, width, height)
-
-           # Get stroke width
-           stroke_size = float(input(f"\nEnter stroke width ({units}): "))
-           stroke_width_mm = stroke_size if units == 'mm' else inches_to_mm(stroke_size)
+               doc_width = float(self.doc_width.get())
+               doc_height = float(self.doc_height.get())
            
-           # Display final dimensions
-           width_mm, height_mm = get_output_dimensions(width, height, pixel_size_mm)
-           print(f"\nOutput document dimensions:")
-           print(f"Width: {width_mm:.1f}mm ({mm_to_inches(width_mm):.1f}in)")
-           print(f"Height: {height_mm:.1f}mm ({mm_to_inches(height_mm):.1f}in)")
-           print(f"Pixel size: {pixel_size_mm:.2f}mm ({mm_to_inches(pixel_size_mm):.3f}in)")
-           print(f"Stroke width: {stroke_width_mm:.2f}mm ({mm_to_inches(stroke_width_mm):.3f}in)")
+           # Convert units if needed
+           if units == "in":
+               stroke_width = inches_to_mm(stroke_width)
+               if self.size_type.get() == "pixel":
+                   pixel_size = inches_to_mm(pixel_size)
+               else:
+                   doc_width = inches_to_mm(doc_width)
+                   doc_height = inches_to_mm(doc_height)
            
-           # Generate SVG if dimensions are accepted
-           if input("\nContinue with these dimensions? (y/n): ").lower() == 'y':
-               fill_type = input("\nEnter fill type (s for solid stroke, z for zigzag): ").lower()
-               angle = None
-               if fill_type == 'z':
-                   angle = float(input("Enter zigzag angle (degrees): "))
-               
-               output_file = input_file.rsplit('.', 1)[0] + '.svg'
-               bitmap_to_svg(input_file, output_file, pixel_size_mm, stroke_width_mm, angle)
-               break
+           # Calculate pixel size from document dimensions
+           if self.size_type.get() == "document":
+               img = Image.open(input_file)
+               width, height = img.size
+               pixel_size = get_pixel_size_from_doc_size(doc_width, doc_height, width, height)
+           
+           # Get angle for zigzag pattern
+           angle = None
+           if self.fill_type.get() == "zigzag":
+               angle = float(self.angle.get())
+           
+           # Generate SVG    
+           output_file = input_file.rsplit('.', 1)[0] + '.svg'
+           bitmap_to_svg(input_file, output_file, pixel_size, stroke_width, angle)
+           tk.messagebox.showinfo("Success", f"SVG saved as {output_file}")
+           
+       except Exception as e:
+           tk.messagebox.showerror("Error", str(e))
+   
+   # Start GUI        
+   def run(self):
+       self.root.mainloop()
 
 if __name__ == "__main__":
-   main()
+   app = BitmapConverterGUI()
+   app.run()
