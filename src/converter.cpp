@@ -6,61 +6,104 @@
 #include <vector>
 #include <QImage>
 
-double BitmapConverter::mmToInches(double mm) {
-   return mm / 25.4;
-}
+// Unit conversions
+double BitmapConverter::mmToInches(double mm) { return mm / 25.4; }
+double BitmapConverter::inchesToMm(double inches) { return inches * 25.4; }
 
-double BitmapConverter::inchesToMm(double inches) {
-   return inches * 25.4;
-}
-
+// Calculate pixel size to fit document dimensions
 double BitmapConverter::getPixelSizeFromDocSize(double docWidth, double docHeight, int pixelWidth, int pixelHeight) {
-   double widthPixelSize = docWidth / pixelWidth;
-   double heightPixelSize = docHeight / pixelHeight;
-   return std::min(widthPixelSize, heightPixelSize);
+   return std::min(docWidth / pixelWidth, docHeight / pixelHeight);
 }
 
+// Generate zigzag pattern for pixel
 std::vector<std::array<double, 4>> BitmapConverter::createZigzagPath(
-   double x, double y, double width, double height, double strokeWidth, double angle) {
-   
-   // Convert angle to radians and calculate spacing
-   double angleRad = angle * M_PI / 180.0;
-   double spacing = strokeWidth;
-   
-   // Calculate lines needed to fill space
-   double diagonal = std::sqrt(width*width + height*height);
-   int numLines = static_cast<int>(diagonal / spacing) + 1;
-   
-   // Calculate perpendicular vector for line offsets
-   double perpX = -std::sin(angleRad);
-   double perpY = std::cos(angleRad);
-   
-   std::vector<std::array<double, 4>> paths;
-   for (int i = 0; i < numLines; ++i) {
-       double offset = i * spacing;
-       double startX = x + offset * perpX;
-       double startY = y + offset * perpY;
-       
-       double endX = startX + width * std::cos(angleRad);
-       double endY = startY + width * std::sin(angleRad);
-       
-       auto points = clipLineToRect(startX, startY, endX, endY, x, y, width, height);
-       if (points) {
-           paths.push_back(*points);
-       }
-   }
-   return paths;
+    double x, double y, double width, double height, double strokeWidth, double angle) {
+    
+    double angleRad = angle * M_PI / 180.0;
+    double spacing = strokeWidth;
+    double diagonal = std::sqrt(width*width + height*height);
+    int numLines = static_cast<int>(diagonal / spacing) + 1;
+    
+    // Calculate perpendicular vector for offset
+    double cosA = std::cos(angleRad);
+    double sinA = std::sin(angleRad);
+    
+    std::vector<std::array<double, 4>> paths;
+    
+    // Starting point for the zigzag pattern
+    double baseX = x;
+    double baseY = y;
+    
+    // Generate lines at the specified angle
+    for (int i = 0; i < numLines; ++i) {
+        // Calculate offset position perpendicular to angle
+        double startX = baseX + i * spacing * -sinA;
+        double startY = baseY + i * spacing * cosA;
+        
+        // Calculate end point extending past the box
+        double endX = startX + (width + height) * cosA;
+        double endY = startY + (width + height) * sinA;
+        
+        // Clip line to box boundaries
+        if (auto clipped = clipLineToRect(startX, startY, endX, endY, x, y, width, height)) {
+            paths.push_back(*clipped);
+        }
+    }
+    
+    return paths;
 }
 
-std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
-   double x1, double y1, double x2, double y2, 
-   double rx, double ry, double rw, double rh) {
-   
-   if (!lineRectIntersect(x1, y1, x2, y2, rx, ry, rw, rh)) {
-       return std::nullopt;
-   }
+// Check if line segments can connect
+bool BitmapConverter::canConnect(const PathSegment& s1, const PathSegment& s2) {
+   const double EPSILON = 1e-10;
+   return (std::abs(s1.x2 - s2.x1) < EPSILON && std::abs(s1.y2 - s2.y1) < EPSILON) ||
+          (std::abs(s1.x2 - s2.x2) < EPSILON && std::abs(s1.y2 - s2.y2) < EPSILON) ||
+          (std::abs(s1.x1 - s2.x1) < EPSILON && std::abs(s1.y1 - s2.y1) < EPSILON) ||
+          (std::abs(s1.x1 - s2.x2) < EPSILON && std::abs(s1.y1 - s2.y2) < EPSILON);
+}
 
-   // Clip line to rectangle boundaries using Cohen-Sutherland algorithm
+// Optimize paths by connecting segments
+std::vector<OptimizedPath> BitmapConverter::optimizePaths(
+   const std::vector<std::vector<PathSegment>>& allPaths, double strokeWidth) {
+   std::vector<OptimizedPath> optimizedPaths;
+   std::vector<bool> used(allPaths.size(), false);
+
+   for (size_t i = 0; i < allPaths.size(); i++) {
+       if (used[i]) continue;
+
+       OptimizedPath currentPath;
+       currentPath.strokeWidth = strokeWidth;
+       currentPath.segments = allPaths[i];
+       used[i] = true;
+
+       bool foundConnection;
+       do {
+           foundConnection = false;
+           for (size_t j = 0; j < allPaths.size(); j++) {
+               if (used[j]) continue;
+               for (const auto& segment : allPaths[j]) {
+                   if (canConnect(currentPath.segments.back(), segment)) {
+                       currentPath.segments.push_back(segment);
+                       used[j] = true;
+                       foundConnection = true;
+                       break;
+                   }
+               }
+               if (foundConnection) break;
+           }
+       } while (foundConnection);
+
+       optimizedPaths.push_back(currentPath);
+   }
+   return optimizedPaths;
+}
+
+// Clip line to rectangle using Cohen-Sutherland
+std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
+   double x1, double y1, double x2, double y2, double rx, double ry, double rw, double rh) {
+   
+   if (!lineRectIntersect(x1, y1, x2, y2, rx, ry, rw, rh)) return std::nullopt;
+
    auto clip = [](double& x1, double& y1, double& x2, double& y2,
                  double rx, double ry, double rw, double rh) 
                  -> std::optional<std::array<double, 4>> {
@@ -71,11 +114,8 @@ std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
        auto clipT = [](double denom, double num, double& tMin, double& tMax) {
            if (std::abs(denom) < 1e-10) return denom >= 0;
            double t = num / denom;
-           if (denom > 0) {
-               tMax = std::min(tMax, t);
-           } else {
-               tMin = std::max(tMin, t);
-           }
+           if (denom > 0) tMax = std::min(tMax, t);
+           else tMin = std::max(tMin, t);
            return tMax >= tMin;
        };
 
@@ -83,12 +123,12 @@ std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
            clipT(-dx, x1 - (rx + rw), tMin, tMax) &&
            clipT(dy, ry - y1, tMin, tMax) &&
            clipT(-dy, y1 - (ry + rh), tMin, tMax)) {
-           
-           double newX1 = x1 + tMin * dx;
-           double newY1 = y1 + tMin * dy;
-           double newX2 = x1 + tMax * dx;
-           double newY2 = y1 + tMax * dy;
-           return std::array<double, 4>{newX1, newY1, newX2, newY2};
+           return std::array<double, 4>{
+               x1 + tMin * dx,
+               y1 + tMin * dy,
+               x1 + tMax * dx,
+               y1 + tMax * dy
+           };
        }
        return std::nullopt;
    };
@@ -96,6 +136,7 @@ std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
    return clip(x1, y1, x2, y2, rx, ry, rw, rh);
 }
 
+// Check if line intersects rectangle
 bool BitmapConverter::lineRectIntersect(
    double x1, double y1, double x2, double y2,
    double rx, double ry, double rw, double rh) {
@@ -103,22 +144,20 @@ bool BitmapConverter::lineRectIntersect(
             std::max(y1, y2) < ry || std::min(y1, y2) > ry + rh);
 }
 
+// Main conversion function
 void BitmapConverter::convert(
    const std::string& inputFile, 
    const std::string& outputFile,
    const ConverterParams& params) {
    
-   // Load and convert image to 1-bit
    QImage img(QString::fromStdString(inputFile));
-   if (img.isNull()) {
-       throw std::runtime_error("Failed to load image");
-   }
+   if (img.isNull()) throw std::runtime_error("Failed to load image");
    img = img.convertToFormat(QImage::Format_Mono);
    
    int width = img.width();
    int height = img.height();
 
-   // Calculate pixel size in mm based on input parameters
+   // Calculate sizes in mm
    double pixelSizeMm;
    if (params.units == Units::Inches) {
        pixelSizeMm = params.pixelSize ? inchesToMm(params.pixelSize) : 
@@ -131,18 +170,15 @@ void BitmapConverter::convert(
                                           width, height);
    }
 
-   // Convert measurements to points (72dpi)
+   // Convert to points (72dpi)
    double pixelSize = (pixelSizeMm / 25.4) * 72;
    double strokeWidth = ((params.units == Units::Inches ? 
                          inchesToMm(params.strokeWidth) : 
                          params.strokeWidth) / 25.4) * 72;
    double inset = strokeWidth / 2;
 
-   // Create output file
    std::ofstream svg(outputFile);
-   if (!svg) {
-       throw std::runtime_error("Failed to create output file");
-   }
+   if (!svg) throw std::runtime_error("Failed to create output file");
 
    // Write SVG header
    svg << "<svg width=\"" << width * pixelSize << "px\" "
@@ -150,32 +186,69 @@ void BitmapConverter::convert(
        << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
        << "xmlns=\"http://www.w3.org/2000/svg\">\n";
 
-   // Process each pixel
+   // Collect paths
+   std::vector<std::vector<PathSegment>> allPaths;
    for (int y = 0; y < height; ++y) {
        for (int x = 0; x < width; ++x) {
-           if (img.pixelColor(x, y).value() == 0) {  // Black pixel
+           if (img.pixelColor(x, y).value() == 0) {
                double px = x * pixelSize + inset;
                double py = y * pixelSize + inset;
                double pwidth = pixelSize - strokeWidth;
                double pheight = pixelSize - strokeWidth;
 
-               // Draw pixel outline
-               svg << "  <rect x=\"" << px << "\" y=\"" << py
-                   << "\" width=\"" << pwidth << "\" height=\"" << pheight
-                   << "\" fill=\"none\" stroke=\"black\" "
-                   << "stroke-width=\"" << strokeWidth << "\"/>\n";
+               std::vector<PathSegment> pixelPaths;
+               // Add outline
+               pixelPaths.push_back({px, py, px + pwidth, py});
+               pixelPaths.push_back({px + pwidth, py, px + pwidth, py + pheight});
+               pixelPaths.push_back({px + pwidth, py + pheight, px, py + pheight});
+               pixelPaths.push_back({px, py + pheight, px, py});
 
-               // Add zigzag pattern if specified
+               // Add zigzag fill if selected
                if (params.fillType == FillType::Zigzag) {
-                   auto paths = createZigzagPath(px, py, pwidth, pheight, 
-                                               strokeWidth, params.angle);
-                   for (const auto& p : paths) {
-                       svg << "  <line x1=\"" << p[0] << "\" y1=\"" << p[1]
-                           << "\" x2=\"" << p[2] << "\" y2=\"" << p[3]
-                           << "\" stroke=\"black\" "
-                           << "stroke-width=\"" << strokeWidth << "\"/>\n";
+                   auto zigzags = createZigzagPath(px, py, pwidth, pheight, strokeWidth, params.angle);
+                   for (const auto& z : zigzags) {
+                       pixelPaths.push_back({z[0], z[1], z[2], z[3]});
                    }
                }
+               allPaths.push_back(pixelPaths);
+           }
+       }
+   }
+
+   // Write optimized or unoptimized paths
+   if (params.optimize) {
+       auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
+       
+       // Write outline paths
+       for (const auto& path : optimizedPaths) {
+           bool isOutline = path.segments.size() == 4;
+           if (isOutline) {
+               svg << "  <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
+               for (const auto& segment : path.segments) {
+                   svg << " L " << segment.x2 << " " << segment.y2;
+               }
+               svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
+                   << path.strokeWidth << "\"/>\n";
+           }
+       }
+       
+       // Write zigzag paths
+       for (const auto& path : optimizedPaths) {
+           bool isOutline = path.segments.size() == 4;
+           if (!isOutline) {
+               for (const auto& segment : path.segments) {
+                   svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                       << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+               }
+           }
+       }
+   } else {
+       for (const auto& pixelPaths : allPaths) {
+           for (const auto& segment : pixelPaths) {
+               svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                   << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                   << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
            }
        }
    }
