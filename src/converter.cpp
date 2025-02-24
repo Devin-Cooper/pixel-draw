@@ -15,38 +15,89 @@ double BitmapConverter::getPixelSizeFromDocSize(double docWidth, double docHeigh
    return std::min(docWidth / pixelWidth, docHeight / pixelHeight);
 }
 
-// Generate zigzag pattern for pixel
+// Generate zigzag pattern for pixel with special case handling for orthogonal angles
 std::vector<std::array<double, 4>> BitmapConverter::createZigzagPath(
     double x, double y, double width, double height, double strokeWidth, double angle) {
     
-    double angleRad = angle * M_PI / 180.0;
-    double spacing = strokeWidth;
-    double diagonal = std::sqrt(width*width + height*height);
-    int numLines = static_cast<int>(diagonal / spacing) + 1;
-    
-    // Calculate perpendicular vector for offset
-    double cosA = std::cos(angleRad);
-    double sinA = std::sin(angleRad);
-    
     std::vector<std::array<double, 4>> paths;
     
-    // Starting point for the zigzag pattern
-    double baseX = x;
-    double baseY = y;
+    // If angle is very close to 0, 90, 180, or 270 degrees, handle it as a special case
+    bool isOrthogonal = (std::fmod(std::abs(angle), 90.0) < 0.001 || std::fmod(std::abs(angle), 90.0) > 89.999);
     
-    // Generate lines at the specified angle
-    for (int i = 0; i < numLines; ++i) {
-        // Calculate offset position perpendicular to angle
-        double startX = baseX + i * spacing * -sinA;
-        double startY = baseY + i * spacing * cosA;
+    if (isOrthogonal) {
+        // Normalize to 0, 90, 180, or 270 degrees
+        int angle90 = static_cast<int>(std::round(angle / 90.0)) % 4 * 90;
         
-        // Calculate end point extending past the box
-        double endX = startX + (width + height) * cosA;
-        double endY = startY + (width + height) * sinA;
+        // Determine if horizontal or vertical
+        bool isHorizontal = (angle90 == 0 || angle90 == 180);
+        int numLines = static_cast<int>(std::floor((isHorizontal ? height : width) / strokeWidth)) + 1;
         
-        // Clip line to box boundaries
-        if (auto clipped = clipLineToRect(startX, startY, endX, endY, x, y, width, height)) {
-            paths.push_back(*clipped);
+        // Create evenly spaced horizontal or vertical lines
+        for (int i = 0; i < numLines; i++) {
+            if (isHorizontal) {
+                // Horizontal lines
+                double yPos = y + i * strokeWidth;
+                if (yPos <= y + height) {
+                    paths.push_back({x, yPos, x + width, yPos});
+                }
+            } else {
+                // Vertical lines
+                double xPos = x + i * strokeWidth;
+                if (xPos <= x + width) {
+                    paths.push_back({xPos, y, xPos, y + height});
+                }
+            }
+        }
+    } else {
+        // Handle diagonal angles
+        double angleRad = angle * M_PI / 180.0;
+        double spacing = strokeWidth;
+        double diagonal = std::sqrt(width*width + height*height);
+        int numLines = static_cast<int>(diagonal / spacing * 1.5) + 2;
+        
+        // Direction vectors
+        double cosA = std::cos(angleRad);
+        double sinA = std::sin(angleRad);
+        
+        // Determine which corner to start from based on angle
+        double cornerX, cornerY;
+        
+        if (angle > 0 && angle < 90) {
+            cornerX = x;
+            cornerY = y;
+        } else if (angle >= 90 && angle < 180) {
+            cornerX = x + width;
+            cornerY = y;
+        } else if (angle >= 180 && angle < 270) {
+            cornerX = x + width;
+            cornerY = y + height;
+        } else {
+            cornerX = x;
+            cornerY = y + height;
+        }
+        
+        // Calculate perpendicular direction
+        double perpX = -sinA;
+        double perpY = cosA;
+        
+        // Generate lines covering the whole box
+        double startDistance = -diagonal / 2;
+        
+        for (int i = 0; i < numLines; i++) {
+            double offset = startDistance + i * spacing;
+            
+            // Starting point offset perpendicularly from the corner
+            double startX = cornerX + offset * perpX;
+            double startY = cornerY + offset * perpY;
+            
+            // Endpoint is in the line's direction, far enough to cross the whole box
+            double endX = startX + diagonal * 2 * cosA;
+            double endY = startY + diagonal * 2 * sinA;
+            
+            // Clip line to box boundaries
+            if (auto clipped = clipLineToRect(startX, startY, endX, endY, x, y, width, height)) {
+                paths.push_back(*clipped);
+            }
         }
     }
     
