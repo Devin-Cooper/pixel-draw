@@ -100,40 +100,61 @@ std::vector<OptimizedPath> BitmapConverter::optimizePaths(
 
 // Clip line to rectangle using Cohen-Sutherland
 std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
-   double x1, double y1, double x2, double y2, double rx, double ry, double rw, double rh) {
-   
-   if (!lineRectIntersect(x1, y1, x2, y2, rx, ry, rw, rh)) return std::nullopt;
+    double x1, double y1, double x2, double y2, double rx, double ry, double rw, double rh) {
+    
+    // Define the edges of the rectangle
+    const double xmin = rx;
+    const double ymin = ry;
+    const double xmax = rx + rw;
+    const double ymax = ry + rh;
 
-   auto clip = [](double& x1, double& y1, double& x2, double& y2,
-                 double rx, double ry, double rw, double rh) 
-                 -> std::optional<std::array<double, 4>> {
-       double tMin = 0, tMax = 1;
-       double dx = x2 - x1;
-       double dy = y2 - y1;
+    // Calculate direction vector
+    const double dx = x2 - x1;
+    const double dy = y2 - y1;
 
-       auto clipT = [](double denom, double num, double& tMin, double& tMax) {
-           if (std::abs(denom) < 1e-10) return denom >= 0;
-           double t = num / denom;
-           if (denom > 0) tMax = std::min(tMax, t);
-           else tMin = std::max(tMin, t);
-           return tMax >= tMin;
-       };
+    // Initialize parameters
+    double p[4] = {-dx, dx, -dy, dy};
+    double q[4] = {x1 - xmin, xmax - x1, y1 - ymin, ymax - y1};
+    double u1 = 0;
+    double u2 = 1;
 
-       if (clipT(dx, rx - x1, tMin, tMax) &&
-           clipT(-dx, x1 - (rx + rw), tMin, tMax) &&
-           clipT(dy, ry - y1, tMin, tMax) &&
-           clipT(-dy, y1 - (ry + rh), tMin, tMax)) {
-           return std::array<double, 4>{
-               x1 + tMin * dx,
-               y1 + tMin * dy,
-               x1 + tMax * dx,
-               y1 + tMax * dy
-           };
-       }
-       return std::nullopt;
-   };
+    for (int i = 0; i < 4; i++) {
+        // Parallel line to edge
+        if (std::abs(p[i]) < 1e-10) {
+            // Line outside the edge
+            if (q[i] < 0) {
+                return std::nullopt;
+            }
+            // Otherwise we continue, line is inside or on the edge
+        } else {
+            double t = q[i] / p[i];
+            if (p[i] < 0) {
+                // Line entering
+                if (t > u2) {
+                    return std::nullopt;
+                }
+                if (t > u1) {
+                    u1 = t;
+                }
+            } else {
+                // Line leaving
+                if (t < u1) {
+                    return std::nullopt;
+                }
+                if (t < u2) {
+                    u2 = t;
+                }
+            }
+        }
+    }
 
-   return clip(x1, y1, x2, y2, rx, ry, rw, rh);
+    // If we get here, the line segment is at least partially inside
+    return std::array<double, 4>{
+        x1 + u1 * dx,
+        y1 + u1 * dy,
+        x1 + u2 * dx,
+        y1 + u2 * dy
+    };
 }
 
 // Check if line intersects rectangle
