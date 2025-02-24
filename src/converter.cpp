@@ -113,29 +113,51 @@ bool BitmapConverter::canConnect(const PathSegment& s1, const PathSegment& s2) {
           (std::abs(s1.x1 - s2.x2) < EPSILON && std::abs(s1.y1 - s2.y2) < EPSILON);
 }
 
-// Optimize paths by connecting segments
+// Optimize paths for continuous zigzag pattern to minimize pen lifts
 std::vector<OptimizedPath> BitmapConverter::optimizePaths(
    const std::vector<std::vector<PathSegment>>& allPaths, double strokeWidth) {
    std::vector<OptimizedPath> optimizedPaths;
-   std::vector<bool> used(allPaths.size(), false);
-
-   for (size_t i = 0; i < allPaths.size(); i++) {
-       if (used[i]) continue;
-
+   
+   // First pass: Separate outlines and zigzags
+   std::vector<std::vector<PathSegment>> outlines;
+   std::vector<std::vector<PathSegment>> zigzags;
+   
+   for (const auto& path : allPaths) {
+       if (path.size() == 4) {
+           // This is an outline (rectangle with 4 segments)
+           outlines.push_back(path);
+       } else if (path.size() > 4) {
+           // This is a zigzag fill (outline + zigzag lines)
+           std::vector<PathSegment> outline(path.begin(), path.begin() + 4);
+           std::vector<PathSegment> zigzag(path.begin() + 4, path.end());
+           
+           outlines.push_back(outline);
+           zigzags.push_back(zigzag);
+       }
+   }
+   
+   // Optimize outlines using the original algorithm
+   std::vector<bool> outlineUsed(outlines.size(), false);
+   
+   for (size_t i = 0; i < outlines.size(); i++) {
+       if (outlineUsed[i]) continue;
+       
        OptimizedPath currentPath;
        currentPath.strokeWidth = strokeWidth;
-       currentPath.segments = allPaths[i];
-       used[i] = true;
-
+       currentPath.segments = outlines[i];
+       outlineUsed[i] = true;
+       
        bool foundConnection;
        do {
            foundConnection = false;
-           for (size_t j = 0; j < allPaths.size(); j++) {
-               if (used[j]) continue;
-               for (const auto& segment : allPaths[j]) {
+           for (size_t j = 0; j < outlines.size(); j++) {
+               if (outlineUsed[j]) continue;
+               
+               // Check if outline j can connect to the current path
+               for (const auto& segment : outlines[j]) {
                    if (canConnect(currentPath.segments.back(), segment)) {
                        currentPath.segments.push_back(segment);
-                       used[j] = true;
+                       outlineUsed[j] = true;
                        foundConnection = true;
                        break;
                    }
@@ -143,13 +165,108 @@ std::vector<OptimizedPath> BitmapConverter::optimizePaths(
                if (foundConnection) break;
            }
        } while (foundConnection);
-
+       
        optimizedPaths.push_back(currentPath);
    }
+   
+   // Special optimization for zigzag fills
+   for (size_t i = 0; i < zigzags.size(); i++) {
+       const auto& zigzagLines = zigzags[i];
+       if (zigzagLines.empty()) continue;
+       
+       OptimizedPath zigzagPath;
+       zigzagPath.strokeWidth = strokeWidth;
+       
+       // For a continuous zigzag, we need to intelligently order the lines
+       // and create connecting segments between them
+       
+       // Group zigzag lines by their angle (for multiangle cases)
+       std::map<double, std::vector<PathSegment>> linesByAngle;
+       
+       for (const auto& line : zigzagLines) {
+           // Calculate angle of the line
+           double dx = line.x2 - line.x1;
+           double dy = line.y2 - line.y1;
+           double angle = std::atan2(dy, dx);
+           
+           // Group by angle, rounded to 0.01 radians
+           double roundedAngle = std::round(angle * 100) / 100.0;
+           linesByAngle[roundedAngle].push_back(line);
+       }
+       
+       // Process each angle group
+       for (auto& [angle, lines] : linesByAngle) {
+           // Determine the primary axis for sorting based on line angle
+           bool sortByY = std::abs(std::cos(angle)) < std::abs(std::sin(angle));
+           
+           // Sort lines by their position
+           if (sortByY) {
+               std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
+                   return (a.y1 + a.y2) / 2.0 < (b.y1 + b.y2) / 2.0;
+               });
+           } else {
+               std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
+                   return (a.x1 + a.x2) / 2.0 < (b.x1 + b.x2) / 2.0;
+               });
+           }
+           
+           // Create a continuous zigzag path with connecting segments
+           std::vector<PathSegment> continuousPath;
+           bool forward = true;
+           
+           for (size_t j = 0; j < lines.size(); j++) {
+               PathSegment currentLine = lines[j];
+               
+               // If going backward, reverse the line direction
+               if (!forward) {
+                   std::swap(currentLine.x1, currentLine.x2);
+                   std::swap(currentLine.y1, currentLine.y2);
+               }
+               
+               // Add the current line to the path
+               continuousPath.push_back(currentLine);
+               
+               // If not the last line, add a connector to the next line
+               if (j < lines.size() - 1) {
+                   PathSegment nextLine = lines[j + 1];
+                   
+                   // Create connecting segment
+                   PathSegment connector;
+                   connector.x1 = currentLine.x2;
+                   connector.y1 = currentLine.y2;
+                   
+                   // Determine which end of the next line to connect to
+                   if (forward) {
+                       // Going from current end to next start
+                       connector.x2 = nextLine.x1;
+                       connector.y2 = nextLine.y1;
+                   } else {
+                       // Going from current end to next end (since we'll traverse next line backward)
+                       connector.x2 = nextLine.x2;
+                       connector.y2 = nextLine.y2;
+                   }
+                   
+                   continuousPath.push_back(connector);
+                   
+                   // Flip direction for next line (bidirectional zigzag)
+                   forward = !forward;
+               }
+           }
+           
+           // Add all segments from this angle group to the path
+           zigzagPath.segments.insert(zigzagPath.segments.end(), continuousPath.begin(), continuousPath.end());
+       }
+       
+       // Add the optimized zigzag path
+       if (!zigzagPath.segments.empty()) {
+           optimizedPaths.push_back(zigzagPath);
+       }
+   }
+   
    return optimizedPaths;
 }
 
-// Clip line to rectangle using Cohen-Sutherland
+// Clip line to rectangle using Liang-Barsky algorithm
 std::optional<std::array<double, 4>> BitmapConverter::clipLineToRect(
     double x1, double y1, double x2, double y2, double rx, double ry, double rw, double rh) {
     
@@ -216,6 +333,133 @@ bool BitmapConverter::lineRectIntersect(
             std::max(y1, y2) < ry || std::min(y1, y2) > ry + rh);
 }
 
+// Format a path for Inkscape using SVG path commands
+std::string BitmapConverter::formatPathForInkscape(const std::vector<PathSegment>& segments, double strokeWidth) {
+    std::stringstream ss;
+    
+    if (segments.empty()) return "";
+    
+    // Start the path
+    ss << "<path d=\"M " << segments[0].x1 << "," << segments[0].y1;
+    
+    // Add line segments
+    for (const auto& seg : segments) {
+        ss << " L " << seg.x2 << "," << seg.y2;
+    }
+    
+    // Close the path attributes
+    ss << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\" />";
+    
+    return ss.str();
+}
+
+// Write SVG with optimizations for Inkscape
+void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, bool forInkscape) {
+    if (forInkscape) {
+        // Group outlines
+        svg << "  <g id=\"outlines\">\n";
+        for (const auto& path : optimizedPaths) {
+            bool isOutline = path.segments.size() == 4;
+            if (isOutline) {
+                svg << "    " << formatPathForInkscape(path.segments, path.strokeWidth) << "\n";
+            }
+        }
+        svg << "  </g>\n";
+        
+        // Group zigzag fills (if any)
+        bool hasZigzags = false;
+        for (const auto& path : optimizedPaths) {
+            if (path.segments.size() > 4) {
+                hasZigzags = true;
+                break;
+            }
+        }
+        
+        if (hasZigzags) {
+            svg << "  <g id=\"fills\">\n";
+            for (const auto& path : optimizedPaths) {
+                if (path.segments.size() > 4) {
+                    // Check if this is a continuous zigzag path (segments with shared endpoints)
+                    bool isContinuous = true;
+                    for (size_t i = 1; i < path.segments.size(); i++) {
+                        if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
+                            std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
+                            isContinuous = false;
+                            break;
+                        }
+                    }
+                    
+                    if (isContinuous) {
+                        // For continuous zigzag, use a single polyline which is very efficient
+                        svg << "    <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                        
+                        for (const auto& segment : path.segments) {
+                            svg << " " << segment.x2 << "," << segment.y2;
+                        }
+                        svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                    } else {
+                        // For non-continuous zigzag, use a polyline for each segment
+                        for (const auto& segment : path.segments) {
+                            svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                                << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                << "\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                        }
+                    }
+                }
+            }
+            svg << "  </g>\n";
+        }
+    } else {
+        // Original output format with improved zigzag handling
+        // Write outline paths
+        for (const auto& path : optimizedPaths) {
+            bool isOutline = path.segments.size() == 4;
+            if (isOutline) {
+                svg << "  <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
+                for (const auto& segment : path.segments) {
+                    svg << " L " << segment.x2 << " " << segment.y2;
+                }
+                svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
+                    << path.strokeWidth << "\"/>\n";
+            }
+        }
+        
+        // Write zigzag paths
+        for (const auto& path : optimizedPaths) {
+            bool isOutline = path.segments.size() == 4;
+            if (!isOutline) {
+                // Check if this is a continuous zigzag path (segments with shared endpoints)
+                bool isContinuous = true;
+                for (size_t i = 1; i < path.segments.size(); i++) {
+                    if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
+                        std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
+                        isContinuous = false;
+                        break;
+                    }
+                }
+                
+                if (isContinuous) {
+                    // For continuous zigzag, use a single polyline for efficiency
+                    svg << "  <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                    
+                    for (const auto& segment : path.segments) {
+                        svg << " " << segment.x2 << "," << segment.y2;
+                    }
+                    svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
+                        << path.strokeWidth << "\"/>\n";
+                } else {
+                    // For non-continuous zigzag, use individual lines
+                    for (const auto& segment : path.segments) {
+                        svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                            << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                            << "\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Main conversion function
 void BitmapConverter::convert(
    const std::string& inputFile, 
@@ -252,11 +496,25 @@ void BitmapConverter::convert(
    std::ofstream svg(outputFile);
    if (!svg) throw std::runtime_error("Failed to create output file");
 
-   // Write SVG header
-   svg << "<svg width=\"" << width * pixelSize << "px\" "
-       << "height=\"" << height * pixelSize << "px\" "
-       << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
-       << "xmlns=\"http://www.w3.org/2000/svg\">\n";
+   // Write SVG header with additional metadata for Inkscape
+   svg << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n";
+   if (params.optimizeForInkscape) {
+       svg << "<!-- Created with Bitmap Converter (Inkscape optimized) -->\n";
+       svg << "<svg xmlns:svg=\"http://www.w3.org/2000/svg\" "
+           << "xmlns=\"http://www.w3.org/2000/svg\" "
+           << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+           << "width=\"" << width * pixelSize << "px\" "
+           << "height=\"" << height * pixelSize << "px\" "
+           << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
+           << "version=\"1.1\">\n";
+       svg << "<title>Bitmap Conversion</title>\n";
+       svg << "<desc>Converted from " << inputFile << "</desc>\n";
+   } else {
+       svg << "<svg width=\"" << width * pixelSize << "px\" "
+           << "height=\"" << height * pixelSize << "px\" "
+           << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
+           << "xmlns=\"http://www.w3.org/2000/svg\">\n";
+   }
 
    // Collect paths
    std::vector<std::vector<PathSegment>> allPaths;
@@ -290,37 +548,56 @@ void BitmapConverter::convert(
    // Write optimized or unoptimized paths
    if (params.optimize) {
        auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
-       
-       // Write outline paths
-       for (const auto& path : optimizedPaths) {
-           bool isOutline = path.segments.size() == 4;
-           if (isOutline) {
-               svg << "  <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
-               for (const auto& segment : path.segments) {
-                   svg << " L " << segment.x2 << " " << segment.y2;
-               }
-               svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
-                   << path.strokeWidth << "\"/>\n";
-           }
-       }
-       
-       // Write zigzag paths
-       for (const auto& path : optimizedPaths) {
-           bool isOutline = path.segments.size() == 4;
-           if (!isOutline) {
-               for (const auto& segment : path.segments) {
-                   svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+       writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
+   } else {
+       // Non-optimized path output
+       if (params.optimizeForInkscape) {
+           // For Inkscape optimization without path optimization,
+           // we still group similar elements together
+           
+           // Group all outline segments
+           svg << "  <g id=\"outlines\">\n";
+           for (const auto& pixelPaths : allPaths) {
+               for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
+                   const auto& segment = pixelPaths[i];
+                   svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                        << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
                        << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
                }
            }
-       }
-   } else {
-       for (const auto& pixelPaths : allPaths) {
-           for (const auto& segment : pixelPaths) {
-               svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                   << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                   << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+           svg << "  </g>\n";
+           
+           // Group all fill segments
+           bool hasFills = false;
+           for (const auto& pixelPaths : allPaths) {
+               if (pixelPaths.size() > 4) {
+                   hasFills = true;
+                   break;
+               }
+           }
+           
+           if (hasFills) {
+               svg << "  <g id=\"fills\">\n";
+               for (const auto& pixelPaths : allPaths) {
+                   if (pixelPaths.size() > 4) {
+                       for (size_t i = 4; i < pixelPaths.size(); i++) {
+                           const auto& segment = pixelPaths[i];
+                           svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                               << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                               << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                       }
+                   }
+               }
+               svg << "  </g>\n";
+           }
+       } else {
+           // Original non-optimized output format
+           for (const auto& pixelPaths : allPaths) {
+               for (const auto& segment : pixelPaths) {
+                   svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                       << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+               }
            }
        }
    }

@@ -4,7 +4,9 @@
 #include <QSettings>
 
 QT_BEGIN_NAMESPACE
-namespace Ui { class MainWindow; }
+namespace Ui { 
+    class MainWindow; 
+}
 QT_END_NAMESPACE
 
 /**
@@ -52,12 +54,14 @@ private slots:
     
     /**
      * @brief Saves current UI settings to persistent storage
+     * This is called automatically when UI elements change
      */
     void saveSettings();
 
 private:
     /**
      * @brief Loads previously saved settings from persistent storage
+     * This is called during application startup
      */
     void loadSettings();
     

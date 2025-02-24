@@ -251,6 +251,19 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QCheckBox" name="optimizeForInkscapeCheckbox">
+        <property name="toolTip">
+         <string>Reduces file size and improves loading in Inkscape</string>
+        </property>
+        <property name="text">
+         <string>Optimize for Inkscape</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

@@ -39,6 +39,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->mmRadio->setChecked(true);
     ui->solidRadio->setChecked(true);
     ui->optimizeCheckbox->setChecked(true);
+    ui->optimizeForInkscapeCheckbox->setChecked(false); // Default to false for new option
     ui->pixelSizeInput->setValue(1.0);
     ui->strokeWidthInput->setValue(0.1);
     ui->angleInput->setValue(45.0);
@@ -70,8 +71,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->docHeightInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
             this, &MainWindow::saveSettings);
     
-    // For checkbox
+    // For checkboxes
     connect(ui->optimizeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
+    connect(ui->optimizeForInkscapeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
     
     // For radio button groups
     connect(sizeTypeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::saveSettings);
@@ -128,6 +130,7 @@ void MainWindow::convert() {
         params.fillType = fillTypeGroup->checkedButton()->text() == "Zigzag" ? FillType::Zigzag : FillType::Solid;
         params.strokeWidth = ui->strokeWidthInput->value();
         params.optimize = ui->optimizeCheckbox->isChecked();
+        params.optimizeForInkscape = ui->optimizeForInkscapeCheckbox->isChecked();
 
         // Set either pixel size or document size based on selection
         if (sizeTypeGroup->checkedButton()->text() == "Pixel Size") {
@@ -206,8 +209,9 @@ void MainWindow::saveSettings() {
     settings.setValue("docWidth", ui->docWidthInput->value());
     settings.setValue("docHeight", ui->docHeightInput->value());
     
-    // Save checkbox state
+    // Save checkbox states
     settings.setValue("optimize", ui->optimizeCheckbox->isChecked());
+    settings.setValue("optimizeForInkscape", ui->optimizeForInkscapeCheckbox->isChecked());
     
     // Explicitly sync to ensure all settings are written immediately
     settings.sync();
@@ -232,8 +236,9 @@ void MainWindow::loadSettings() {
     ui->docWidthInput->setValue(settings.value("docWidth", 100.0).toDouble());
     ui->docHeightInput->setValue(settings.value("docHeight", 100.0).toDouble());
     
-    // Then load checkbox state
+    // Then load checkbox states
     ui->optimizeCheckbox->setChecked(settings.value("optimize", true).toBool());
+    ui->optimizeForInkscapeCheckbox->setChecked(settings.value("optimizeForInkscape", false).toBool());
     
     // Finally, load radio button states (this triggers visibility updates)
     bool usePixelSize = settings.value("pixelSizeRadio", true).toBool();
