@@ -108,6 +108,29 @@ private:
                   const ConverterParams& params, ThreadContext& context);
 
    /**
+    * @brief Optimize a chunk of paths in parallel
+    * @param chunkPaths Vector of paths to optimize
+    * @param strokeWidth Stroke width
+    * @param chunkIndex Index of this chunk
+    * @param totalChunks Total number of chunks
+    * @return Vector of optimized paths
+    */
+   std::vector<OptimizedPath> optimizePathChunk(
+      const std::vector<std::vector<PathSegment>>& chunkPaths, 
+      double strokeWidth, int chunkIndex, int totalChunks);
+
+   /**
+    * @brief Optimize paths for a single color
+    * @param colorPaths Vector of paths for this color
+    * @param strokeWidth Stroke width
+    * @param colorName Color name for logging
+    * @return Vector of optimized paths
+    */
+   std::vector<OptimizedPath> optimizeColorPaths(
+      const std::vector<std::vector<PathSegment>>& colorPaths, 
+      double strokeWidth, const QString& colorName);
+
+   /**
     * @brief Convert millimeters to inches
     * @param mm Value in millimeters
     * @return Value in inches
@@ -178,10 +201,11 @@ private:
     * @brief Optimize paths for continuous zigzag pattern with minimal pen lifts
     * @param allPaths Vector of paths to optimize
     * @param strokeWidth Width of the stroke
+    * @param numThreads Number of threads to use for optimization
     * @return Vector of optimized paths
     */
    std::vector<OptimizedPath> optimizePaths(const std::vector<std::vector<PathSegment>>& allPaths, 
-                                          double strokeWidth);
+                                          double strokeWidth, int numThreads = 1);
    
    /**
     * @brief Check if two line segments can be connected

@@ -8,6 +8,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <iostream>
+#include <future>
 
 // Unit conversions
 double BitmapConverter::mmToInches(double mm) { return mm / 25.4; }
@@ -116,157 +117,234 @@ bool BitmapConverter::canConnect(const PathSegment& s1, const PathSegment& s2) {
           (std::abs(s1.x1 - s2.x2) < EPSILON && std::abs(s1.y1 - s2.y2) < EPSILON);
 }
 
-// Optimize paths for continuous zigzag pattern to minimize pen lifts
+// NEW FUNCTION: Optimize a chunk of paths for multi-threaded optimization
+std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
+    const std::vector<std::vector<PathSegment>>& chunkPaths, double strokeWidth,
+    int chunkIndex, int totalChunks) {
+    
+    QElapsedTimer chunkTimer;
+    chunkTimer.start();
+    
+    std::vector<OptimizedPath> optimizedChunk;
+    
+    // First pass: Separate outlines and zigzags
+    std::vector<std::vector<PathSegment>> outlines;
+    std::vector<std::vector<PathSegment>> zigzags;
+    
+    for (const auto& path : chunkPaths) {
+        if (path.size() == 4) {
+            // This is an outline (rectangle with 4 segments)
+            outlines.push_back(path);
+        } else if (path.size() > 4) {
+            // This is a zigzag fill (outline + zigzag lines)
+            std::vector<PathSegment> outline(path.begin(), path.begin() + 4);
+            std::vector<PathSegment> zigzag(path.begin() + 4, path.end());
+            
+            outlines.push_back(outline);
+            zigzags.push_back(zigzag);
+        }
+    }
+    
+    // Optimize outlines using the original algorithm
+    std::vector<bool> outlineUsed(outlines.size(), false);
+    
+    for (size_t i = 0; i < outlines.size(); i++) {
+        if (outlineUsed[i]) continue;
+        
+        OptimizedPath currentPath;
+        currentPath.strokeWidth = strokeWidth;
+        currentPath.segments = outlines[i];
+        outlineUsed[i] = true;
+        
+        bool foundConnection;
+        do {
+            foundConnection = false;
+            for (size_t j = 0; j < outlines.size(); j++) {
+                if (outlineUsed[j]) continue;
+                
+                // Check if outline j can connect to the current path
+                for (const auto& segment : outlines[j]) {
+                    if (canConnect(currentPath.segments.back(), segment)) {
+                        currentPath.segments.push_back(segment);
+                        outlineUsed[j] = true;
+                        foundConnection = true;
+                        break;
+                    }
+                }
+                if (foundConnection) break;
+            }
+        } while (foundConnection);
+        
+        optimizedChunk.push_back(currentPath);
+    }
+    
+    // Special optimization for zigzag fills
+    for (size_t i = 0; i < zigzags.size(); i++) {
+        const auto& zigzagLines = zigzags[i];
+        if (zigzagLines.empty()) continue;
+        
+        OptimizedPath zigzagPath;
+        zigzagPath.strokeWidth = strokeWidth;
+        
+        // For a continuous zigzag, we need to intelligently order the lines
+        // and create connecting segments between them
+        
+        // Group zigzag lines by their angle (for multiangle cases)
+        std::map<double, std::vector<PathSegment>> linesByAngle;
+        
+        for (const auto& line : zigzagLines) {
+            // Calculate angle of the line
+            double dx = line.x2 - line.x1;
+            double dy = line.y2 - line.y1;
+            double angle = std::atan2(dy, dx);
+            
+            // Group by angle, rounded to 0.01 radians
+            double roundedAngle = std::round(angle * 100) / 100.0;
+            linesByAngle[roundedAngle].push_back(line);
+        }
+        
+        // Process each angle group
+        for (auto& [angle, lines] : linesByAngle) {
+            // Determine the primary axis for sorting based on line angle
+            bool sortByY = std::abs(std::cos(angle)) < std::abs(std::sin(angle));
+            
+            // Sort lines by their position
+            if (sortByY) {
+                std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
+                    return (a.y1 + a.y2) / 2.0 < (b.y1 + b.y2) / 2.0;
+                });
+            } else {
+                std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
+                    return (a.x1 + a.x2) / 2.0 < (b.x1 + b.x2) / 2.0;
+                });
+            }
+            
+            // Create a continuous zigzag path with connecting segments
+            std::vector<PathSegment> continuousPath;
+            bool forward = true;
+            
+            for (size_t j = 0; j < lines.size(); j++) {
+                PathSegment currentLine = lines[j];
+                
+                // If going backward, reverse the line direction
+                if (!forward) {
+                    std::swap(currentLine.x1, currentLine.x2);
+                    std::swap(currentLine.y1, currentLine.y2);
+                }
+                
+                // Add the current line to the path
+                continuousPath.push_back(currentLine);
+                
+                // If not the last line, add a connector to the next line
+                if (j < lines.size() - 1) {
+                    PathSegment nextLine = lines[j + 1];
+                    
+                    // Create connecting segment
+                    PathSegment connector;
+                    connector.x1 = currentLine.x2;
+                    connector.y1 = currentLine.y2;
+                    
+                    // Determine which end of the next line to connect to
+                    if (forward) {
+                        // Going from current end to next start
+                        connector.x2 = nextLine.x1;
+                        connector.y2 = nextLine.y1;
+                    } else {
+                        // Going from current end to next end (since we'll traverse next line backward)
+                        connector.x2 = nextLine.x2;
+                        connector.y2 = nextLine.y2;
+                    }
+                    
+                    continuousPath.push_back(connector);
+                    
+                    // Flip direction for next line (bidirectional zigzag)
+                    forward = !forward;
+                }
+            }
+            
+            // Add all segments from this angle group to the path
+            zigzagPath.segments.insert(zigzagPath.segments.end(), continuousPath.begin(), continuousPath.end());
+        }
+        
+        // Add the optimized zigzag path
+        if (!zigzagPath.segments.empty()) {
+            optimizedChunk.push_back(zigzagPath);
+        }
+    }
+    
+    qint64 elapsed = chunkTimer.elapsed();
+    std::cout << "Path optimization chunk " << chunkIndex << "/" << totalChunks 
+              << " complete. Time: " << elapsed << " ms, "
+              << "Paths: " << chunkPaths.size() << " -> " << optimizedChunk.size() << std::endl;
+    
+    return optimizedChunk;
+}
+
+// NEW FUNCTION: Optimize paths for a single color (for multi-threaded color optimization)
+std::vector<OptimizedPath> BitmapConverter::optimizeColorPaths(
+    const std::vector<std::vector<PathSegment>>& colorPaths, double strokeWidth,
+    const QString& colorName) {
+    
+    QElapsedTimer colorTimer;
+    colorTimer.start();
+    
+    // Use the same optimization logic as for monochrome paths
+    auto result = optimizePathChunk(colorPaths, strokeWidth, 0, 1);
+    
+    qint64 elapsed = colorTimer.elapsed();
+    std::cout << "Optimized paths for color " << colorName.toStdString() 
+              << " in " << elapsed << " ms. Paths: " 
+              << colorPaths.size() << " -> " << result.size() << std::endl;
+    
+    return result;
+}
+
+// Original optimizePaths function is now a wrapper that distributes work to multiple threads
 std::vector<OptimizedPath> BitmapConverter::optimizePaths(
-   const std::vector<std::vector<PathSegment>>& allPaths, double strokeWidth) {
-   std::vector<OptimizedPath> optimizedPaths;
-   
-   // First pass: Separate outlines and zigzags
-   std::vector<std::vector<PathSegment>> outlines;
-   std::vector<std::vector<PathSegment>> zigzags;
-   
-   for (const auto& path : allPaths) {
-       if (path.size() == 4) {
-           // This is an outline (rectangle with 4 segments)
-           outlines.push_back(path);
-       } else if (path.size() > 4) {
-           // This is a zigzag fill (outline + zigzag lines)
-           std::vector<PathSegment> outline(path.begin(), path.begin() + 4);
-           std::vector<PathSegment> zigzag(path.begin() + 4, path.end());
-           
-           outlines.push_back(outline);
-           zigzags.push_back(zigzag);
-       }
-   }
-   
-   // Optimize outlines using the original algorithm
-   std::vector<bool> outlineUsed(outlines.size(), false);
-   
-   for (size_t i = 0; i < outlines.size(); i++) {
-       if (outlineUsed[i]) continue;
-       
-       OptimizedPath currentPath;
-       currentPath.strokeWidth = strokeWidth;
-       currentPath.segments = outlines[i];
-       outlineUsed[i] = true;
-       
-       bool foundConnection;
-       do {
-           foundConnection = false;
-           for (size_t j = 0; j < outlines.size(); j++) {
-               if (outlineUsed[j]) continue;
-               
-               // Check if outline j can connect to the current path
-               for (const auto& segment : outlines[j]) {
-                   if (canConnect(currentPath.segments.back(), segment)) {
-                       currentPath.segments.push_back(segment);
-                       outlineUsed[j] = true;
-                       foundConnection = true;
-                       break;
-                   }
-               }
-               if (foundConnection) break;
-           }
-       } while (foundConnection);
-       
-       optimizedPaths.push_back(currentPath);
-   }
-   
-   // Special optimization for zigzag fills
-   for (size_t i = 0; i < zigzags.size(); i++) {
-       const auto& zigzagLines = zigzags[i];
-       if (zigzagLines.empty()) continue;
-       
-       OptimizedPath zigzagPath;
-       zigzagPath.strokeWidth = strokeWidth;
-       
-       // For a continuous zigzag, we need to intelligently order the lines
-       // and create connecting segments between them
-       
-       // Group zigzag lines by their angle (for multiangle cases)
-       std::map<double, std::vector<PathSegment>> linesByAngle;
-       
-       for (const auto& line : zigzagLines) {
-           // Calculate angle of the line
-           double dx = line.x2 - line.x1;
-           double dy = line.y2 - line.y1;
-           double angle = std::atan2(dy, dx);
-           
-           // Group by angle, rounded to 0.01 radians
-           double roundedAngle = std::round(angle * 100) / 100.0;
-           linesByAngle[roundedAngle].push_back(line);
-       }
-       
-       // Process each angle group
-       for (auto& [angle, lines] : linesByAngle) {
-           // Determine the primary axis for sorting based on line angle
-           bool sortByY = std::abs(std::cos(angle)) < std::abs(std::sin(angle));
-           
-           // Sort lines by their position
-           if (sortByY) {
-               std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
-                   return (a.y1 + a.y2) / 2.0 < (b.y1 + b.y2) / 2.0;
-               });
-           } else {
-               std::sort(lines.begin(), lines.end(), [](const PathSegment& a, const PathSegment& b) {
-                   return (a.x1 + a.x2) / 2.0 < (b.x1 + b.x2) / 2.0;
-               });
-           }
-           
-           // Create a continuous zigzag path with connecting segments
-           std::vector<PathSegment> continuousPath;
-           bool forward = true;
-           
-           for (size_t j = 0; j < lines.size(); j++) {
-               PathSegment currentLine = lines[j];
-               
-               // If going backward, reverse the line direction
-               if (!forward) {
-                   std::swap(currentLine.x1, currentLine.x2);
-                   std::swap(currentLine.y1, currentLine.y2);
-               }
-               
-               // Add the current line to the path
-               continuousPath.push_back(currentLine);
-               
-               // If not the last line, add a connector to the next line
-               if (j < lines.size() - 1) {
-                   PathSegment nextLine = lines[j + 1];
-                   
-                   // Create connecting segment
-                   PathSegment connector;
-                   connector.x1 = currentLine.x2;
-                   connector.y1 = currentLine.y2;
-                   
-                   // Determine which end of the next line to connect to
-                   if (forward) {
-                       // Going from current end to next start
-                       connector.x2 = nextLine.x1;
-                       connector.y2 = nextLine.y1;
-                   } else {
-                       // Going from current end to next end (since we'll traverse next line backward)
-                       connector.x2 = nextLine.x2;
-                       connector.y2 = nextLine.y2;
-                   }
-                   
-                   continuousPath.push_back(connector);
-                   
-                   // Flip direction for next line (bidirectional zigzag)
-                   forward = !forward;
-               }
-           }
-           
-           // Add all segments from this angle group to the path
-           zigzagPath.segments.insert(zigzagPath.segments.end(), continuousPath.begin(), continuousPath.end());
-       }
-       
-       // Add the optimized zigzag path
-       if (!zigzagPath.segments.empty()) {
-           optimizedPaths.push_back(zigzagPath);
-       }
-   }
-   
-   return optimizedPaths;
+   const std::vector<std::vector<PathSegment>>& allPaths, double strokeWidth, int numThreads) {
+    
+    if (numThreads <= 1 || allPaths.size() < 100) {
+        // For small path counts or single-threading, use the direct approach
+        return optimizePathChunk(allPaths, strokeWidth, 0, 1);
+    }
+    
+    // Divide paths into chunks for parallel processing
+    std::vector<std::vector<std::vector<PathSegment>>> chunks;
+    
+    // Limit threads based on path count
+    int adjustedThreads = std::min(numThreads, static_cast<int>(allPaths.size() / 50));
+    adjustedThreads = std::max(1, adjustedThreads);
+    
+    if (adjustedThreads < numThreads) {
+        std::cout << "Reduced optimization threads from " << numThreads 
+                  << " to " << adjustedThreads << " based on path count" << std::endl;
+    }
+    
+    // Create chunks of paths
+    chunks.resize(adjustedThreads);
+    for (size_t i = 0; i < allPaths.size(); i++) {
+        chunks[i % adjustedThreads].push_back(allPaths[i]);
+    }
+    
+    std::cout << "Multi-threaded path optimization with " << adjustedThreads 
+              << " threads for " << allPaths.size() << " paths" << std::endl;
+    
+    // Process each chunk in parallel
+    std::vector<std::future<std::vector<OptimizedPath>>> futures;
+    for (int i = 0; i < adjustedThreads; i++) {
+        futures.push_back(std::async(std::launch::async, 
+                          &BitmapConverter::optimizePathChunk, this,
+                          chunks[i], strokeWidth, i, adjustedThreads));
+    }
+    
+    // Collect results
+    std::vector<OptimizedPath> result;
+    for (auto& future : futures) {
+        auto chunkResult = future.get();
+        result.insert(result.end(), chunkResult.begin(), chunkResult.end());
+    }
+    
+    return result;
 }
 
 // Clip line to rectangle using Liang-Barsky algorithm
@@ -629,7 +707,7 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
     }
 }
 
-// Process a chunk of the image in a separate thread
+// Process a chunk of the image in a separate thread - modified to ignore white in color mode
 void BitmapConverter::processChunk(
     const QImage& img, int startY, int endY, int width, 
     double pixelSize, double strokeWidth, double inset,
@@ -637,6 +715,7 @@ void BitmapConverter::processChunk(
     
     // Count processed pixels for reporting
     int processedPixels = 0;
+    int skippedWhitePixels = 0;
     QElapsedTimer threadTimer;
     threadTimer.start();
     
@@ -680,6 +759,20 @@ void BitmapConverter::processChunk(
                 
                 // Skip transparent pixels
                 if (qAlpha(pixelColor) == 0) continue;
+                
+                // Skip white or near-white pixels in color mode
+                int r = qRed(pixelColor);
+                int g = qGreen(pixelColor);
+                int b = qBlue(pixelColor);
+                
+                // Define whiteness threshold (can be adjusted)
+                // Higher threshold means more off-white colors will be ignored
+                const int whiteThreshold = 245; 
+                
+                if (r >= whiteThreshold && g >= whiteThreshold && b >= whiteThreshold) {
+                    skippedWhitePixels++;
+                    continue;
+                }
                 
                 // Create color info
                 ColorInfo currentColor;
@@ -739,8 +832,13 @@ void BitmapConverter::processChunk(
     qint64 elapsed = threadTimer.elapsed();
     std::cout << "Thread processing rows " << startY << "-" << (endY-1) 
               << " finished in " << elapsed << " ms, processed " 
-              << processedPixels << " pixels (" 
-              << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
+              << processedPixels << " pixels";
+    
+    if (params.colorMode == ColorMode::PreserveColors) {
+        std::cout << ", skipped " << skippedWhitePixels << " white pixels";
+    }
+    
+    std::cout << " (" << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
 }
 
 // Main conversion function with multithreading support
@@ -889,6 +987,10 @@ void BitmapConverter::convert(
            << "xmlns=\"http://www.w3.org/2000/svg\">\n";
    }
 
+   // Start optimization timer
+   QElapsedTimer optimizeTimer;
+   optimizeTimer.start();
+
    // Process based on color mode
    if (params.colorMode == ColorMode::Monochrome) {
        // Process monochrome paths
@@ -897,11 +999,10 @@ void BitmapConverter::convert(
        
        // Write optimized or unoptimized paths
        if (params.optimize) {
-           QElapsedTimer optimizeTimer;
-           optimizeTimer.start();
-           std::cout << "Optimizing paths..." << std::endl;
-           auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
-           std::cout << "Path optimization complete. Time: " << optimizeTimer.elapsed() << " ms" << std::endl;
+           std::cout << "Optimizing paths with " << numThreads << " threads..." << std::endl;
+           auto optimizedPaths = optimizePaths(allPaths, strokeWidth, numThreads);
+           qint64 optimizeTime = optimizeTimer.elapsed();
+           std::cout << "Path optimization complete. Time: " << optimizeTime << " ms" << std::endl;
            std::cout << "Original paths: " << allPaths.size() << ", Optimized paths: " << optimizedPaths.size() << std::endl;
            writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
        } else {
@@ -961,29 +1062,59 @@ void BitmapConverter::convert(
        // Optimize paths by color and write to SVG
        std::map<ColorInfo, std::vector<OptimizedPath>> optimizedPathsByColor;
        
-       for (const auto& pair : pathsByColor) {
-           const ColorInfo& color = pair.first;
-           const auto& colorPaths = pair.second;
+       if (params.optimize) {
+           std::cout << "Optimizing paths for multiple colors using " << numThreads << " threads..." << std::endl;
            
-           if (params.optimize) {
-               QElapsedTimer colorOptimizeTimer;
-               colorOptimizeTimer.start();
-               std::cout << "Optimizing paths for color: " << color.svgColor.toStdString() << "..." << std::endl;
-               optimizedPathsByColor[color] = optimizePaths(colorPaths, strokeWidth);
-               std::cout << "Color paths optimization complete. Time: " << colorOptimizeTimer.elapsed() << " ms" << std::endl;
+           // Use multiple threads to optimize paths for different colors in parallel
+           if (pathsByColor.size() > 1 && numThreads > 1) {
+               // Create futures for each color
+               std::vector<std::future<std::pair<ColorInfo, std::vector<OptimizedPath>>>> futures;
+               
+               for (const auto& pair : pathsByColor) {
+                   futures.push_back(std::async(std::launch::async, 
+                                   [this, &pair, strokeWidth]() {
+                       return std::make_pair(
+                           pair.first, 
+                           this->optimizeColorPaths(pair.second, strokeWidth, pair.first.svgColor)
+                       );
+                   }));
+               }
+               
+               // Collect results
+               for (auto& future : futures) {
+                   auto result = future.get();
+                   optimizedPathsByColor[result.first] = result.second;
+               }
            } else {
-               // For non-optimized paths, we still create OptimizedPath objects
-               // for consistent handling
+               // Process colors sequentially if there's only one color or thread
+               for (const auto& pair : pathsByColor) {
+                   const ColorInfo& color = pair.first;
+                   const auto& colorPaths = pair.second;
+                   
+                   QElapsedTimer colorOptimizeTimer;
+                   colorOptimizeTimer.start();
+                   std::cout << "Optimizing paths for color: " << color.svgColor.toStdString() << "..." << std::endl;
+                   optimizedPathsByColor[color] = optimizePaths(colorPaths, strokeWidth, numThreads);
+                   std::cout << "Color paths optimization complete. Time: " << colorOptimizeTimer.elapsed() << " ms" << std::endl;
+               }
+           }
+       } else {
+           // For non-optimized paths, we still create OptimizedPath objects
+           // for consistent handling
+           for (const auto& pair : pathsByColor) {
                std::vector<OptimizedPath> simplePaths;
-               for (const auto& path : colorPaths) {
+               for (const auto& path : pair.second) {
                    OptimizedPath optimizedPath;
                    optimizedPath.segments = path;
                    optimizedPath.strokeWidth = strokeWidth;
                    simplePaths.push_back(optimizedPath);
                }
-               optimizedPathsByColor[color] = simplePaths;
+               optimizedPathsByColor[pair.first] = simplePaths;
            }
        }
+       
+       qint64 optimizeTime = optimizeTimer.elapsed();
+       std::cout << "Color path optimization complete. Time: " << optimizeTime << " ms" << std::endl;
        
        // Write all color layers to SVG
        writeColorLayersSvg(svg, optimizedPathsByColor, params.optimizeForInkscape);
@@ -999,6 +1130,8 @@ void BitmapConverter::convert(
    std::cout << "Total conversion time: " << totalTime << " ms\n";
    std::cout << "- Processing time: " << processingTime << " ms (" 
              << (processingTime * 100 / totalTime) << "%)\n";
+   std::cout << "- Optimization time: " << optimizeTimer.elapsed() << " ms ("
+             << (optimizeTimer.elapsed() * 100 / totalTime) << "%)\n";
    std::cout << "- SVG writing time: " << svgWriteTime << " ms (" 
              << (svgWriteTime * 100 / totalTime) << "%)\n";
    std::cout << "Threads used: " << numThreads << "\n";
