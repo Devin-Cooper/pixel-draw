@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <vector>
 #include <QImage>
+#include <QDebug>
+#include <QElapsedTimer>
+#include <iostream>
 
 // Unit conversions
 double BitmapConverter::mmToInches(double mm) { return mm / 25.4; }
@@ -632,6 +635,11 @@ void BitmapConverter::processChunk(
     double pixelSize, double strokeWidth, double inset,
     const ConverterParams& params, ThreadContext& context) {
     
+    // Count processed pixels for reporting
+    int processedPixels = 0;
+    QElapsedTimer threadTimer;
+    threadTimer.start();
+    
     // Process all pixels in this chunk
     for (int y = startY; y < endY; ++y) {
         for (int x = 0; x < width; ++x) {
@@ -663,6 +671,8 @@ void BitmapConverter::processChunk(
                         std::lock_guard<std::mutex> lock(context.mutex);
                         context.paths.push_back(pixelPaths);
                     }
+                    
+                    processedPixels++;
                 }
             } else {
                 // Process color pixels
@@ -720,9 +730,17 @@ void BitmapConverter::processChunk(
                         context.colorPaths[currentColor].push_back(pixelPaths);
                     }
                 }
+                
+                processedPixels++;
             }
         }
     }
+    
+    qint64 elapsed = threadTimer.elapsed();
+    std::cout << "Thread processing rows " << startY << "-" << (endY-1) 
+              << " finished in " << elapsed << " ms, processed " 
+              << processedPixels << " pixels (" 
+              << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
 }
 
 // Main conversion function with multithreading support
@@ -731,15 +749,27 @@ void BitmapConverter::convert(
    const std::string& outputFile,
    const ConverterParams& params) {
    
+   // Start overall timing
+   QElapsedTimer totalTimer;
+   totalTimer.start();
+   
+   std::cout << "\n========== Starting conversion ==========\n";
+   std::cout << "Input file: " << inputFile << std::endl;
+   std::cout << "Output file: " << outputFile << std::endl;
+   
    QImage img(QString::fromStdString(inputFile));
    if (img.isNull()) throw std::runtime_error("Failed to load image");
+   
+   std::cout << "Image loaded successfully. Dimensions: " << img.width() << "x" << img.height() << std::endl;
    
    // Handle image format based on color mode
    if (params.colorMode == ColorMode::Monochrome) {
        img = img.convertToFormat(QImage::Format_Mono);
+       std::cout << "Using monochrome mode" << std::endl;
    } else {
        // For color mode, ensure we have a format that preserves colors
        img = img.convertToFormat(QImage::Format_ARGB32);
+       std::cout << "Using color mode - preserving colors" << std::endl;
    }
    
    int width = img.width();
@@ -752,10 +782,12 @@ void BitmapConverter::convert(
                      getPixelSizeFromDocSize(inchesToMm(params.docWidth), 
                                           inchesToMm(params.docHeight), 
                                           width, height);
+       std::cout << "Units: Inches" << std::endl;
    } else {
        pixelSizeMm = params.pixelSize ? params.pixelSize : 
                      getPixelSizeFromDocSize(params.docWidth, params.docHeight, 
                                           width, height);
+       std::cout << "Units: Millimeters" << std::endl;
    }
 
    // Convert to points (72dpi)
@@ -770,9 +802,17 @@ void BitmapConverter::convert(
    if (numThreads <= 0) {
        // Auto-detect: use available hardware concurrency, but at least 1
        numThreads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+       std::cout << "Auto-detected available threads: " << numThreads << std::endl;
+   } else {
+       std::cout << "Using user-specified thread count: " << numThreads << std::endl;
    }
+   
    // Limit threads to reasonable number
+   int originalThreadCount = numThreads;
    numThreads = std::min(numThreads, 32);
+   if (originalThreadCount != numThreads) {
+       std::cout << "Limited thread count to 32" << std::endl;
+   }
    
    // Create thread context for collecting results
    ThreadContext context;
@@ -785,12 +825,24 @@ void BitmapConverter::convert(
    if (rowsPerThread == 0) {
        rowsPerThread = 1;
        numThreads = height;
+       std::cout << "Adjusted thread count to match image height: " << numThreads << std::endl;
    }
+   
+   std::cout << "Processing with " << numThreads << " threads, " 
+             << rowsPerThread << " rows per thread" << std::endl;
+   std::cout << "Fill type: " << (params.fillType == FillType::Zigzag ? "Zigzag" : "Solid") << std::endl;
+   std::cout << "Optimization: " << (params.optimize ? "Enabled" : "Disabled") << std::endl;
+   
+   // Start processing timer
+   QElapsedTimer processTimer;
+   processTimer.start();
    
    // Launch threads to process chunks
    for (int t = 0; t < numThreads; t++) {
        int startY = t * rowsPerThread;
        int endY = (t == numThreads - 1) ? height : (t + 1) * rowsPerThread;
+       
+       std::cout << "Starting thread " << t << " to process rows " << startY << " to " << endY - 1 << std::endl;
        
        threads.push_back(std::thread(&BitmapConverter::processChunk, this,
                                   std::ref(img), startY, endY, width,
@@ -799,14 +851,25 @@ void BitmapConverter::convert(
    }
    
    // Wait for all threads to complete
-   for (auto& thread : threads) {
-       thread.join();
+   for (int t = 0; t < threads.size(); t++) {
+       threads[t].join();
+       std::cout << "Thread " << t << " completed" << std::endl;
    }
-
+   
+   qint64 processingTime = processTimer.elapsed();
+   std::cout << "All threads finished. Processing time: " << processingTime << " ms" << std::endl;
+   
+   // Start SVG writing timer
+   QElapsedTimer svgTimer;
+   svgTimer.start();
+   
+   std::cout << "Writing SVG output..." << std::endl;
+   
+   // Prepare to write SVG output
    std::ofstream svg(outputFile);
    if (!svg) throw std::runtime_error("Failed to create output file");
 
-   // Write SVG header with additional metadata for Inkscape
+   // Write SVG header
    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n";
    if (params.optimizeForInkscape) {
        svg << "<!-- Created with Bitmap Converter (Inkscape optimized) -->\n";
@@ -826,17 +889,23 @@ void BitmapConverter::convert(
            << "xmlns=\"http://www.w3.org/2000/svg\">\n";
    }
 
-   // Process image based on color mode
+   // Process based on color mode
    if (params.colorMode == ColorMode::Monochrome) {
        // Process monochrome paths
        std::vector<std::vector<PathSegment>>& allPaths = context.paths;
+       std::cout << "Monochrome paths generated: " << allPaths.size() << std::endl;
        
        // Write optimized or unoptimized paths
        if (params.optimize) {
+           QElapsedTimer optimizeTimer;
+           optimizeTimer.start();
+           std::cout << "Optimizing paths..." << std::endl;
            auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
+           std::cout << "Path optimization complete. Time: " << optimizeTimer.elapsed() << " ms" << std::endl;
+           std::cout << "Original paths: " << allPaths.size() << ", Optimized paths: " << optimizedPaths.size() << std::endl;
            writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
        } else {
-           // Non-optimized path output
+           // Code for non-optimized path output (unchanged)
            if (params.optimizeForInkscape) {
                // Group all outline segments
                svg << "  <g id=\"outlines\">\n";
@@ -887,6 +956,7 @@ void BitmapConverter::convert(
    } else {
        // Handle color processing
        std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& pathsByColor = context.colorPaths;
+       std::cout << "Color mode - unique colors found: " << pathsByColor.size() << std::endl;
        
        // Optimize paths by color and write to SVG
        std::map<ColorInfo, std::vector<OptimizedPath>> optimizedPathsByColor;
@@ -896,7 +966,11 @@ void BitmapConverter::convert(
            const auto& colorPaths = pair.second;
            
            if (params.optimize) {
+               QElapsedTimer colorOptimizeTimer;
+               colorOptimizeTimer.start();
+               std::cout << "Optimizing paths for color: " << color.svgColor.toStdString() << "..." << std::endl;
                optimizedPathsByColor[color] = optimizePaths(colorPaths, strokeWidth);
+               std::cout << "Color paths optimization complete. Time: " << colorOptimizeTimer.elapsed() << " ms" << std::endl;
            } else {
                // For non-optimized paths, we still create OptimizedPath objects
                // for consistent handling
@@ -916,4 +990,18 @@ void BitmapConverter::convert(
    }
 
    svg << "</svg>\n";
+   
+   qint64 svgWriteTime = svgTimer.elapsed();
+   std::cout << "SVG writing complete. Time: " << svgWriteTime << " ms" << std::endl;
+   
+   qint64 totalTime = totalTimer.elapsed();
+   std::cout << "\n========== Conversion Summary ==========\n";
+   std::cout << "Total conversion time: " << totalTime << " ms\n";
+   std::cout << "- Processing time: " << processingTime << " ms (" 
+             << (processingTime * 100 / totalTime) << "%)\n";
+   std::cout << "- SVG writing time: " << svgWriteTime << " ms (" 
+             << (svgWriteTime * 100 / totalTime) << "%)\n";
+   std::cout << "Threads used: " << numThreads << "\n";
+   std::cout << "Output file: " << outputFile << "\n";
+   std::cout << "========================================\n";
 }

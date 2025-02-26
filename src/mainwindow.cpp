@@ -1,6 +1,6 @@
 // mainwindow.cpp
 #include "mainwindow.h"
-#include "../resources/ui_mainwindow.h"  
+#include "../resources/ui_mainwindow.h"
 #include "converter.h"
 #include <QFileDialog>
 #include <QMessageBox>
@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QSpinBox>
+#include <iostream>
 
 /**
  * @brief Constructor for MainWindow
@@ -67,6 +68,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Add the performance group box to the vertical layout before the optimization group box
     ui->verticalLayout->insertWidget(ui->verticalLayout->indexOf(ui->optimizationGroupBox), performanceGroupBox);
 
+    // Log available thread count to help with debugging
+    std::cout << "System has " << std::thread::hardware_concurrency() << " hardware threads available." << std::endl;
+    std::cout << "Default thread count set to: 0 (Auto)" << std::endl;
+
     // Set default values (these will be overridden by loadSettings if settings exist)
     ui->pixelSizeRadio->setChecked(true);
     ui->mmRadio->setChecked(true);
@@ -118,6 +123,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // For thread count
     connect(threadCountSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), 
             this, &MainWindow::saveSettings);
+    connect(threadCountSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+            [this](int value) {
+                std::cout << "Thread count changed to: " << value 
+                          << (value == 0 ? " (Auto)" : "") << std::endl;
+            });
     
     // Update UI visibility based on loaded settings
     updateSizeInputs();
@@ -148,6 +158,7 @@ void MainWindow::browseFile() {
     if (!inputFile.isEmpty()) {
         ui->filePathLabel->setText(inputFile);
         settings.setValue("lastInputFile", inputFile);
+        std::cout << "Selected file: " << inputFile.toStdString() << std::endl;
     }
 }
 
@@ -172,33 +183,49 @@ void MainWindow::convert() {
         params.optimizeForInkscape = ui->optimizeForInkscapeCheckbox->isChecked();
         params.numThreads = threadCountSpinBox->value();
         
+        std::cout << "\n***** Starting conversion with parameters *****" << std::endl;
+        std::cout << "Thread count: " << params.numThreads 
+                  << (params.numThreads == 0 ? " (Auto)" : "") << std::endl;
+        std::cout << "Fill type: " << (params.fillType == FillType::Zigzag ? "Zigzag" : "Solid") << std::endl;
+        std::cout << "Stroke width: " << params.strokeWidth << std::endl;
+        std::cout << "Optimize: " << (params.optimize ? "Yes" : "No") << std::endl;
+        std::cout << "Optimize for Inkscape: " << (params.optimizeForInkscape ? "Yes" : "No") << std::endl;
+        
         // Set color mode
         params.colorMode = colorModeGroup->checkedButton()->text() == "Preserve Colors" ? 
                          ColorMode::PreserveColors : ColorMode::Monochrome;
+        std::cout << "Color mode: " << (params.colorMode == ColorMode::PreserveColors ? 
+                                      "Preserve Colors" : "Monochrome") << std::endl;
 
         // Set either pixel size or document size based on selection
         if (sizeTypeGroup->checkedButton()->text() == "Pixel Size") {
             params.pixelSize = ui->pixelSizeInput->value();
+            std::cout << "Using Pixel Size: " << params.pixelSize << std::endl;
         } else {
             params.docWidth = ui->docWidthInput->value();
             params.docHeight = ui->docHeightInput->value();
+            std::cout << "Using Document Size: " << params.docWidth << " x " << params.docHeight << std::endl;
         }
 
         // Set angle for zigzag fill if selected
         if (params.fillType == FillType::Zigzag) {
             params.angle = ui->angleInput->value();
+            std::cout << "Zigzag angle: " << params.angle << std::endl;
         }
 
         // Create output filename by replacing extension with .svg
         QString outputFile = inputFile;
         outputFile.replace(QRegularExpression("\\..[^.]*$"), ".svg");
+        std::cout << "Output file will be: " << outputFile.toStdString() << std::endl;
         
         // Perform the conversion
+        std::cout << "Starting converter..." << std::endl;
         BitmapConverter converter;
         converter.convert(inputFile.toStdString(), outputFile.toStdString(), params);
         
         // Show success message
         QMessageBox::information(this, "Success", "SVG saved as " + outputFile);
+        std::cout << "Conversion completed successfully" << std::endl;
         
         // Save all settings after successful conversion
         saveSettings();
@@ -206,6 +233,7 @@ void MainWindow::convert() {
     catch (const std::exception& e) {
         // Show error message if conversion fails
         QMessageBox::critical(this, "Error", e.what());
+        std::cerr << "Error during conversion: " << e.what() << std::endl;
     }
 }
 
@@ -275,6 +303,7 @@ void MainWindow::loadSettings() {
     inputFile = settings.value("lastInputFile", "").toString();
     if (!inputFile.isEmpty()) {
         ui->filePathLabel->setText(inputFile);
+        std::cout << "Loaded previous file path: " << inputFile.toStdString() << std::endl;
     }
     
     // First load the numeric values
@@ -289,7 +318,10 @@ void MainWindow::loadSettings() {
     ui->optimizeForInkscapeCheckbox->setChecked(settings.value("optimizeForInkscape", false).toBool());
     
     // Load thread count
-    threadCountSpinBox->setValue(settings.value("threadCount", 0).toInt());
+    int threadCount = settings.value("threadCount", 0).toInt();
+    threadCountSpinBox->setValue(threadCount);
+    std::cout << "Loaded thread count setting: " << threadCount 
+              << (threadCount == 0 ? " (Auto)" : "") << std::endl;
     
     // Finally, load radio button states (this triggers visibility updates)
     bool usePixelSize = settings.value("pixelSizeRadio", true).toBool();
