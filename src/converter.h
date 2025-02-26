@@ -5,9 +5,15 @@
 #include <array>
 #include <optional>
 #include <map>
+#include <QColor>
+#include <QImage> 
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 enum class Units { MM, Inches };
 enum class FillType { Solid, Zigzag };
+enum class ColorMode { Monochrome, PreserveColors }; // New enum for color handling
 
 /**
  * @brief Parameters for the bitmap to SVG conversion
@@ -15,6 +21,7 @@ enum class FillType { Solid, Zigzag };
 struct ConverterParams {
    Units units;              ///< MM or Inches
    FillType fillType;        ///< Solid or Zigzag fill type
+   ColorMode colorMode;      ///< Monochrome or preserve colors
    double strokeWidth;       ///< Width of the strokes in the selected units
    double pixelSize;         ///< Size of each pixel in the selected units (if set)
    double docWidth;          ///< Document width in the selected units (if pixelSize not set)
@@ -22,6 +29,7 @@ struct ConverterParams {
    double angle;             ///< Angle for zigzag fill in degrees
    bool optimize;            ///< Whether to optimize path connections
    bool optimizeForInkscape; ///< Whether to optimize output for Inkscape
+   int numThreads;           ///< Number of threads to use (0 = auto)
 };
 
 /**
@@ -44,6 +52,23 @@ struct OptimizedPath {
 };
 
 /**
+ * @brief Represents color information for multi-color processing
+ */
+struct ColorInfo {
+   QRgb color;              ///< The RGB color value
+   QString svgColor;        ///< SVG-compatible color string
+   QString layerId;         ///< ID for the SVG layer
+   
+   bool operator==(const ColorInfo& other) const {
+       return color == other.color;
+   }
+   
+   bool operator<(const ColorInfo& other) const {
+       return color < other.color;
+   }
+};
+
+/**
  * @brief Class to convert bitmap images to SVG
  */
 class BitmapConverter {
@@ -57,6 +82,31 @@ public:
    void convert(const std::string& inputFile, const std::string& outputFile, const ConverterParams& params);
 
 private:
+   /**
+    * @brief Thread-safe data structure to collect paths from multiple threads
+    */
+   struct ThreadContext {
+       std::vector<std::vector<PathSegment>> paths;
+       std::map<ColorInfo, std::vector<std::vector<PathSegment>>> colorPaths;
+       std::mutex mutex;
+   };
+   
+   /**
+    * @brief Process a chunk of the image in a separate thread
+    * @param img The image to process
+    * @param startY Starting Y coordinate of the chunk
+    * @param endY Ending Y coordinate of the chunk
+    * @param width Width of the image
+    * @param pixelSize Size of each pixel
+    * @param strokeWidth Width of the stroke
+    * @param inset Inset from the pixel edge
+    * @param params Conversion parameters
+    * @param context Thread context for collecting results
+    */
+   void processChunk(const QImage& img, int startY, int endY, int width, 
+                  double pixelSize, double strokeWidth, double inset,
+                  const ConverterParams& params, ThreadContext& context);
+
    /**
     * @brief Convert millimeters to inches
     * @param mm Value in millimeters
@@ -156,4 +206,29 @@ private:
     * @param forInkscape Whether to optimize for Inkscape
     */
    void writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, bool forInkscape);
+   
+   /**
+    * @brief Extract unique colors from an image
+    * @param img The input image
+    * @return Vector of unique colors found
+    */
+   std::vector<ColorInfo> extractUniqueColors(const QImage& img);
+   
+   /**
+    * @brief Convert RGB color to SVG color string
+    * @param color The RGB color value
+    * @return SVG color string in hex format
+    */
+   QString rgbToSvgColor(QRgb color);
+   
+   /**
+    * @brief Write SVG with color layers
+    * @param svg Output stream
+    * @param colorPathsMap Map of color info to optimized paths
+    * @param strokeWidth Width of the stroke
+    * @param forInkscape Whether to optimize for Inkscape
+    */
+   void writeColorLayersSvg(std::ofstream& svg, 
+                          const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
+                          bool forInkscape);
 };

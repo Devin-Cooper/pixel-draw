@@ -2,6 +2,8 @@
 #include <QMainWindow>
 #include <QButtonGroup>
 #include <QSettings>
+#include <QSpinBox>
+#include <QLabel>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { 
@@ -70,5 +72,8 @@ private:
     QButtonGroup *sizeTypeGroup; ///< Group for pixel size vs document size radio buttons
     QButtonGroup *unitsGroup;    ///< Group for mm vs inches radio buttons
     QButtonGroup *fillTypeGroup; ///< Group for solid vs zigzag fill type radio buttons
+    QButtonGroup *colorModeGroup; ///< Group for monochrome vs color mode radio buttons
     QSettings settings;          ///< Persistent settings storage
+    QSpinBox *threadCountSpinBox; ///< Control for thread count
+    QLabel *threadCountLabel;    ///< Label for thread count control
 };

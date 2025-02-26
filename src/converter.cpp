@@ -460,7 +460,272 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
     }
 }
 
-// Main conversion function
+// Extract unique colors from an image
+std::vector<ColorInfo> BitmapConverter::extractUniqueColors(const QImage& img) {
+    std::map<QRgb, ColorInfo> uniqueColors;
+    
+    // Scan image to find all unique non-transparent colors
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = 0; x < img.width(); ++x) {
+            QRgb pixel = img.pixel(x, y);
+            if (qAlpha(pixel) > 0) { // Skip fully transparent pixels
+                if (uniqueColors.find(pixel) == uniqueColors.end()) {
+                    ColorInfo colorInfo;
+                    colorInfo.color = pixel;
+                    colorInfo.svgColor = rgbToSvgColor(pixel);
+                    // Generate layer ID based on color
+                    int colorIndex = uniqueColors.size();
+                    colorInfo.layerId = QString("color_layer_%1").arg(colorIndex);
+                    uniqueColors[pixel] = colorInfo;
+                }
+            }
+        }
+    }
+    
+    // Convert map to vector
+    std::vector<ColorInfo> result;
+    for (const auto& pair : uniqueColors) {
+        result.push_back(pair.second);
+    }
+    
+    return result;
+}
+
+// Convert RGB color to SVG color string
+QString BitmapConverter::rgbToSvgColor(QRgb color) {
+    return QString("#%1%2%3")
+        .arg(qRed(color), 2, 16, QChar('0'))
+        .arg(qGreen(color), 2, 16, QChar('0'))
+        .arg(qBlue(color), 2, 16, QChar('0'));
+}
+
+// Write SVG with color layers
+void BitmapConverter::writeColorLayersSvg(std::ofstream& svg, 
+                                       const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
+                                       bool forInkscape) {
+    // Write each color as a separate layer
+    for (const auto& pair : colorPathsMap) {
+        const ColorInfo& colorInfo = pair.first;
+        const std::vector<OptimizedPath>& paths = pair.second;
+        
+        // Create a layer group for this color
+        svg << "  <g id=\"" << colorInfo.layerId.toStdString() << "\" "
+            << "fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() << "\">\n";
+        
+        // Use existing method for generating SVG content
+        if (forInkscape) {
+            // Group outlines
+            bool hasOutlines = false;
+            for (const auto& path : paths) {
+                if (path.segments.size() == 4) {
+                    hasOutlines = true;
+                    break;
+                }
+            }
+            
+            if (hasOutlines) {
+                svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_outlines\">\n";
+                for (const auto& path : paths) {
+                    if (path.segments.size() == 4) {
+                        svg << "      " << formatPathForInkscape(path.segments, path.strokeWidth) << "\n";
+                    }
+                }
+                svg << "    </g>\n";
+            }
+            
+            // Group zigzag fills (if any)
+            bool hasZigzags = false;
+            for (const auto& path : paths) {
+                if (path.segments.size() > 4) {
+                    hasZigzags = true;
+                    break;
+                }
+            }
+            
+            if (hasZigzags) {
+                svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_fills\">\n";
+                for (const auto& path : paths) {
+                    if (path.segments.size() > 4) {
+                        // Check if this is a continuous zigzag path
+                        bool isContinuous = true;
+                        for (size_t i = 1; i < path.segments.size(); i++) {
+                            if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
+                                std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
+                                isContinuous = false;
+                                break;
+                            }
+                        }
+                        
+                        if (isContinuous) {
+                            // For continuous zigzag, use a single polyline
+                            svg << "      <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                            for (const auto& segment : path.segments) {
+                                svg << " " << segment.x2 << "," << segment.y2;
+                            }
+                            svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                        } else {
+                            // For non-continuous zigzag, use individual lines
+                            for (const auto& segment : path.segments) {
+                                svg << "      <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                                    << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                    << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                            }
+                        }
+                    }
+                }
+                svg << "    </g>\n";
+            }
+        } else {
+            // Non-Inkscape optimized format
+            // Write outline paths
+            for (const auto& path : paths) {
+                bool isOutline = path.segments.size() == 4;
+                if (isOutline) {
+                    svg << "    <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
+                    for (const auto& segment : path.segments) {
+                        svg << " L " << segment.x2 << " " << segment.y2;
+                    }
+                    svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                }
+            }
+            
+            // Write zigzag paths
+            for (const auto& path : paths) {
+                bool isOutline = path.segments.size() == 4;
+                if (!isOutline) {
+                    // Check if this is a continuous zigzag path
+                    bool isContinuous = true;
+                    for (size_t i = 1; i < path.segments.size(); i++) {
+                        if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
+                            std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
+                            isContinuous = false;
+                            break;
+                        }
+                    }
+                    
+                    if (isContinuous) {
+                        // For continuous zigzag, use a single polyline
+                        svg << "    <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                        for (const auto& segment : path.segments) {
+                            svg << " " << segment.x2 << "," << segment.y2;
+                        }
+                        svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                    } else {
+                        // For non-continuous zigzag, use individual lines
+                        for (const auto& segment : path.segments) {
+                            svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                                << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                        }
+                    }
+                }
+            }
+        }
+        
+        svg << "  </g>\n";
+    }
+}
+
+// Process a chunk of the image in a separate thread
+void BitmapConverter::processChunk(
+    const QImage& img, int startY, int endY, int width, 
+    double pixelSize, double strokeWidth, double inset,
+    const ConverterParams& params, ThreadContext& context) {
+    
+    // Process all pixels in this chunk
+    for (int y = startY; y < endY; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (params.colorMode == ColorMode::Monochrome) {
+                // Process monochrome pixels
+                if (img.pixelColor(x, y).value() == 0) {
+                    double px = x * pixelSize + inset;
+                    double py = y * pixelSize + inset;
+                    double pwidth = pixelSize - strokeWidth;
+                    double pheight = pixelSize - strokeWidth;
+
+                    std::vector<PathSegment> pixelPaths;
+                    // Add outline
+                    pixelPaths.push_back({px, py, px + pwidth, py});
+                    pixelPaths.push_back({px + pwidth, py, px + pwidth, py + pheight});
+                    pixelPaths.push_back({px + pwidth, py + pheight, px, py + pheight});
+                    pixelPaths.push_back({px, py + pheight, px, py});
+
+                    // Add zigzag fill if selected
+                    if (params.fillType == FillType::Zigzag) {
+                        auto zigzags = createZigzagPath(px, py, pwidth, pheight, strokeWidth, params.angle);
+                        for (const auto& z : zigzags) {
+                            pixelPaths.push_back({z[0], z[1], z[2], z[3]});
+                        }
+                    }
+                    
+                    // Thread-safe add to the shared paths collection
+                    {
+                        std::lock_guard<std::mutex> lock(context.mutex);
+                        context.paths.push_back(pixelPaths);
+                    }
+                }
+            } else {
+                // Process color pixels
+                QRgb pixelColor = img.pixel(x, y);
+                
+                // Skip transparent pixels
+                if (qAlpha(pixelColor) == 0) continue;
+                
+                // Create color info
+                ColorInfo currentColor;
+                currentColor.color = pixelColor;
+                currentColor.svgColor = rgbToSvgColor(pixelColor);
+                
+                double px = x * pixelSize + inset;
+                double py = y * pixelSize + inset;
+                double pwidth = pixelSize - strokeWidth;
+                double pheight = pixelSize - strokeWidth;
+
+                std::vector<PathSegment> pixelPaths;
+                // Add outline
+                pixelPaths.push_back({px, py, px + pwidth, py});
+                pixelPaths.push_back({px + pwidth, py, px + pwidth, py + pheight});
+                pixelPaths.push_back({px + pwidth, py + pheight, px, py + pheight});
+                pixelPaths.push_back({px, py + pheight, px, py});
+
+                // Add zigzag fill if selected
+                if (params.fillType == FillType::Zigzag) {
+                    auto zigzags = createZigzagPath(px, py, pwidth, pheight, strokeWidth, params.angle);
+                    for (const auto& z : zigzags) {
+                        pixelPaths.push_back({z[0], z[1], z[2], z[3]});
+                    }
+                }
+                
+                // Thread-safe add to the shared color paths collection
+                {
+                    std::lock_guard<std::mutex> lock(context.mutex);
+                    
+                    // Check if we already have this color
+                    bool colorFound = false;
+                    for (auto& pair : context.colorPaths) {
+                        if (pair.first.color == currentColor.color) {
+                            // Add to existing color
+                            pair.second.push_back(pixelPaths);
+                            colorFound = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!colorFound) {
+                        // Generate layer ID for new color
+                        int colorIndex = context.colorPaths.size();
+                        currentColor.layerId = QString("color_layer_%1").arg(colorIndex);
+                        
+                        // Create new color entry
+                        context.colorPaths[currentColor].push_back(pixelPaths);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Main conversion function with multithreading support
 void BitmapConverter::convert(
    const std::string& inputFile, 
    const std::string& outputFile,
@@ -468,7 +733,14 @@ void BitmapConverter::convert(
    
    QImage img(QString::fromStdString(inputFile));
    if (img.isNull()) throw std::runtime_error("Failed to load image");
-   img = img.convertToFormat(QImage::Format_Mono);
+   
+   // Handle image format based on color mode
+   if (params.colorMode == ColorMode::Monochrome) {
+       img = img.convertToFormat(QImage::Format_Mono);
+   } else {
+       // For color mode, ensure we have a format that preserves colors
+       img = img.convertToFormat(QImage::Format_ARGB32);
+   }
    
    int width = img.width();
    int height = img.height();
@@ -493,6 +765,44 @@ void BitmapConverter::convert(
                          params.strokeWidth) / 25.4) * 72;
    double inset = strokeWidth / 2;
 
+   // Determine number of threads to use
+   int numThreads = params.numThreads;
+   if (numThreads <= 0) {
+       // Auto-detect: use available hardware concurrency, but at least 1
+       numThreads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+   }
+   // Limit threads to reasonable number
+   numThreads = std::min(numThreads, 32);
+   
+   // Create thread context for collecting results
+   ThreadContext context;
+   
+   // Divide the image into horizontal strips for each thread
+   std::vector<std::thread> threads;
+   int rowsPerThread = height / numThreads;
+   
+   // If the number of rows is less than the number of threads, adjust
+   if (rowsPerThread == 0) {
+       rowsPerThread = 1;
+       numThreads = height;
+   }
+   
+   // Launch threads to process chunks
+   for (int t = 0; t < numThreads; t++) {
+       int startY = t * rowsPerThread;
+       int endY = (t == numThreads - 1) ? height : (t + 1) * rowsPerThread;
+       
+       threads.push_back(std::thread(&BitmapConverter::processChunk, this,
+                                  std::ref(img), startY, endY, width,
+                                  pixelSize, strokeWidth, inset,
+                                  std::ref(params), std::ref(context)));
+   }
+   
+   // Wait for all threads to complete
+   for (auto& thread : threads) {
+       thread.join();
+   }
+
    std::ofstream svg(outputFile);
    if (!svg) throw std::runtime_error("Failed to create output file");
 
@@ -516,90 +826,93 @@ void BitmapConverter::convert(
            << "xmlns=\"http://www.w3.org/2000/svg\">\n";
    }
 
-   // Collect paths
-   std::vector<std::vector<PathSegment>> allPaths;
-   for (int y = 0; y < height; ++y) {
-       for (int x = 0; x < width; ++x) {
-           if (img.pixelColor(x, y).value() == 0) {
-               double px = x * pixelSize + inset;
-               double py = y * pixelSize + inset;
-               double pwidth = pixelSize - strokeWidth;
-               double pheight = pixelSize - strokeWidth;
-
-               std::vector<PathSegment> pixelPaths;
-               // Add outline
-               pixelPaths.push_back({px, py, px + pwidth, py});
-               pixelPaths.push_back({px + pwidth, py, px + pwidth, py + pheight});
-               pixelPaths.push_back({px + pwidth, py + pheight, px, py + pheight});
-               pixelPaths.push_back({px, py + pheight, px, py});
-
-               // Add zigzag fill if selected
-               if (params.fillType == FillType::Zigzag) {
-                   auto zigzags = createZigzagPath(px, py, pwidth, pheight, strokeWidth, params.angle);
-                   for (const auto& z : zigzags) {
-                       pixelPaths.push_back({z[0], z[1], z[2], z[3]});
-                   }
-               }
-               allPaths.push_back(pixelPaths);
-           }
-       }
-   }
-
-   // Write optimized or unoptimized paths
-   if (params.optimize) {
-       auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
-       writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
-   } else {
-       // Non-optimized path output
-       if (params.optimizeForInkscape) {
-           // For Inkscape optimization without path optimization,
-           // we still group similar elements together
-           
-           // Group all outline segments
-           svg << "  <g id=\"outlines\">\n";
-           for (const auto& pixelPaths : allPaths) {
-               for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
-                   const auto& segment = pixelPaths[i];
-                   svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                       << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
-               }
-           }
-           svg << "  </g>\n";
-           
-           // Group all fill segments
-           bool hasFills = false;
-           for (const auto& pixelPaths : allPaths) {
-               if (pixelPaths.size() > 4) {
-                   hasFills = true;
-                   break;
-               }
-           }
-           
-           if (hasFills) {
-               svg << "  <g id=\"fills\">\n";
+   // Process image based on color mode
+   if (params.colorMode == ColorMode::Monochrome) {
+       // Process monochrome paths
+       std::vector<std::vector<PathSegment>>& allPaths = context.paths;
+       
+       // Write optimized or unoptimized paths
+       if (params.optimize) {
+           auto optimizedPaths = optimizePaths(allPaths, strokeWidth);
+           writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
+       } else {
+           // Non-optimized path output
+           if (params.optimizeForInkscape) {
+               // Group all outline segments
+               svg << "  <g id=\"outlines\">\n";
                for (const auto& pixelPaths : allPaths) {
-                   if (pixelPaths.size() > 4) {
-                       for (size_t i = 4; i < pixelPaths.size(); i++) {
-                           const auto& segment = pixelPaths[i];
-                           svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                               << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                               << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
-                       }
+                   for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
+                       const auto& segment = pixelPaths[i];
+                       svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                           << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                           << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
                    }
                }
                svg << "  </g>\n";
-           }
-       } else {
-           // Original non-optimized output format
-           for (const auto& pixelPaths : allPaths) {
-               for (const auto& segment : pixelPaths) {
-                   svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                       << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+               
+               // Group all fill segments
+               bool hasFills = false;
+               for (const auto& pixelPaths : allPaths) {
+                   if (pixelPaths.size() > 4) {
+                       hasFills = true;
+                       break;
+                   }
+               }
+               
+               if (hasFills) {
+                   svg << "  <g id=\"fills\">\n";
+                   for (const auto& pixelPaths : allPaths) {
+                       if (pixelPaths.size() > 4) {
+                           for (size_t i = 4; i < pixelPaths.size(); i++) {
+                               const auto& segment = pixelPaths[i];
+                               svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                                   << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                   << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                           }
+                       }
+                   }
+                   svg << "  </g>\n";
+               }
+           } else {
+               // Original non-optimized output format
+               for (const auto& pixelPaths : allPaths) {
+                   for (const auto& segment : pixelPaths) {
+                       svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                           << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                           << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                   }
                }
            }
        }
+   } else {
+       // Handle color processing
+       std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& pathsByColor = context.colorPaths;
+       
+       // Optimize paths by color and write to SVG
+       std::map<ColorInfo, std::vector<OptimizedPath>> optimizedPathsByColor;
+       
+       for (const auto& pair : pathsByColor) {
+           const ColorInfo& color = pair.first;
+           const auto& colorPaths = pair.second;
+           
+           if (params.optimize) {
+               optimizedPathsByColor[color] = optimizePaths(colorPaths, strokeWidth);
+           } else {
+               // For non-optimized paths, we still create OptimizedPath objects
+               // for consistent handling
+               std::vector<OptimizedPath> simplePaths;
+               for (const auto& path : colorPaths) {
+                   OptimizedPath optimizedPath;
+                   optimizedPath.segments = path;
+                   optimizedPath.strokeWidth = strokeWidth;
+                   simplePaths.push_back(optimizedPath);
+               }
+               optimizedPathsByColor[color] = simplePaths;
+           }
+       }
+       
+       // Write all color layers to SVG
+       writeColorLayersSvg(svg, optimizedPathsByColor, params.optimizeForInkscape);
    }
 
    svg << "</svg>\n";
