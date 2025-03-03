@@ -228,8 +228,10 @@ private:
     * @param svg Output stream
     * @param optimizedPaths Vector of optimized paths
     * @param forInkscape Whether to optimize for Inkscape
+    * @param strokeColor Optional stroke color to use (defaults to black if empty)
     */
-   void writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, bool forInkscape);
+   void writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, 
+                         bool forInkscape, const std::string& strokeColor = "");
    
    /**
     * @brief Extract unique colors from an image
@@ -249,7 +251,6 @@ private:
     * @brief Write SVG with color layers
     * @param svg Output stream
     * @param colorPathsMap Map of color info to optimized paths
-    * @param strokeWidth Width of the stroke
     * @param forInkscape Whether to optimize for Inkscape
     */
    void writeColorLayersSvg(std::ofstream& svg, 

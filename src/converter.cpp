@@ -428,21 +428,27 @@ std::string BitmapConverter::formatPathForInkscape(const std::vector<PathSegment
         ss << " L " << seg.x2 << "," << seg.y2;
     }
     
-    // Close the path attributes
+    // Close the path attributes - use black as a default that will be replaced
     ss << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\" />";
     
     return ss.str();
 }
 
 // Write SVG with optimizations for Inkscape
-void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, bool forInkscape) {
+void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, 
+                                      bool forInkscape, const std::string& strokeColor) {
+    // Use the specified stroke color, or default to black if not provided
+    std::string color = !strokeColor.empty() ? strokeColor : "black";
+    
     if (forInkscape) {
         // Group outlines
         svg << "  <g id=\"outlines\">\n";
         for (const auto& path : optimizedPaths) {
             bool isOutline = path.segments.size() == 4;
             if (isOutline) {
-                svg << "    " << formatPathForInkscape(path.segments, path.strokeWidth) << "\n";
+                std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
+                pathStr.replace(pathStr.find(" stroke=\"black\""), 15, " stroke=\"" + color + "\"");
+                svg << "    " << pathStr << "\n";
             }
         }
         svg << "  </g>\n";
@@ -477,13 +483,15 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
                         for (const auto& segment : path.segments) {
                             svg << " " << segment.x2 << "," << segment.y2;
                         }
-                        svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                        svg << "\" fill=\"none\" stroke=\"" << color 
+                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                     } else {
                         // For non-continuous zigzag, use a polyline for each segment
                         for (const auto& segment : path.segments) {
                             svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                 << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                                << "\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                                << "\" stroke=\"" << color 
+                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                         }
                     }
                 }
@@ -500,7 +508,7 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
                 for (const auto& segment : path.segments) {
                     svg << " L " << segment.x2 << " " << segment.y2;
                 }
-                svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
+                svg << "\" fill=\"none\" stroke=\"" << color << "\" stroke-width=\"" 
                     << path.strokeWidth << "\"/>\n";
             }
         }
@@ -526,14 +534,14 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
                     for (const auto& segment : path.segments) {
                         svg << " " << segment.x2 << "," << segment.y2;
                     }
-                    svg << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" 
+                    svg << "\" fill=\"none\" stroke=\"" << color << "\" stroke-width=\"" 
                         << path.strokeWidth << "\"/>\n";
                 } else {
                     // For non-continuous zigzag, use individual lines
                     for (const auto& segment : path.segments) {
                         svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                             << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                            << "\" stroke=\"black\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                            << "\" stroke=\"" << color << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
                     }
                 }
             }
@@ -572,18 +580,31 @@ std::vector<ColorInfo> BitmapConverter::extractUniqueColors(const QImage& img) {
     return result;
 }
 
-// Convert RGB color to SVG color string
+// Convert RGB color to SVG color string - Updated for transparency
 QString BitmapConverter::rgbToSvgColor(QRgb color) {
-    return QString("#%1%2%3")
-        .arg(qRed(color), 2, 16, QChar('0'))
-        .arg(qGreen(color), 2, 16, QChar('0'))
-        .arg(qBlue(color), 2, 16, QChar('0'));
+    // Check if we need to handle alpha (transparency)
+    if (qAlpha(color) < 255) {
+        // Include alpha channel for semi-transparent colors
+        return QString("rgba(%1,%2,%3,%4)")
+            .arg(qRed(color))
+            .arg(qGreen(color))
+            .arg(qBlue(color))
+            .arg(qAlpha(color)/255.0, 0, 'f', 2); // Alpha as 0.00-1.00
+    } else {
+        // For fully opaque colors, use hex format which is more common
+        return QString("#%1%2%3")
+            .arg(qRed(color), 2, 16, QChar('0'))
+            .arg(qGreen(color), 2, 16, QChar('0'))
+            .arg(qBlue(color), 2, 16, QChar('0'));
+    }
 }
 
-// Write SVG with color layers
+// Write SVG with color layers - Updated for proper color handling
 void BitmapConverter::writeColorLayersSvg(std::ofstream& svg, 
                                        const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
                                        bool forInkscape) {
+    std::cout << "Writing SVG with " << colorPathsMap.size() << " color layers..." << std::endl;
+    
     // Write each color as a separate layer
     for (const auto& pair : colorPathsMap) {
         const ColorInfo& colorInfo = pair.first;
@@ -608,7 +629,12 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
                 svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_outlines\">\n";
                 for (const auto& path : paths) {
                     if (path.segments.size() == 4) {
-                        svg << "      " << formatPathForInkscape(path.segments, path.strokeWidth) << "\n";
+                        // Use explicit color for each path to ensure color is preserved
+                        std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
+                        // Remove the default stroke color and add our color
+                        pathStr.replace(pathStr.find(" stroke=\"black\""), 15, 
+                                       " stroke=\"" + colorInfo.svgColor.toStdString() + "\"");
+                        svg << "      " << pathStr << "\n";
                     }
                 }
                 svg << "    </g>\n";
@@ -643,12 +669,14 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
                             for (const auto& segment : path.segments) {
                                 svg << " " << segment.x2 << "," << segment.y2;
                             }
-                            svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                            svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
+                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                         } else {
                             // For non-continuous zigzag, use individual lines
                             for (const auto& segment : path.segments) {
                                 svg << "      <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                     << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                    << "\" stroke=\"" << colorInfo.svgColor.toStdString() 
                                     << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                             }
                         }
@@ -666,7 +694,8 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
                     for (const auto& segment : path.segments) {
                         svg << " L " << segment.x2 << " " << segment.y2;
                     }
-                    svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                    svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
+                        << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
                 }
             }
             
@@ -690,12 +719,14 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
                         for (const auto& segment : path.segments) {
                             svg << " " << segment.x2 << "," << segment.y2;
                         }
-                        svg << "\" fill=\"none\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                        svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
+                            << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
                     } else {
                         // For non-continuous zigzag, use individual lines
                         for (const auto& segment : path.segments) {
                             svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                 << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                                << "\" stroke=\"" << colorInfo.svgColor.toStdString() 
                                 << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
                         }
                     }
@@ -705,9 +736,11 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
         
         svg << "  </g>\n";
     }
+    
+    std::cout << "Finished writing color layers" << std::endl;
 }
 
-// Process a chunk of the image in a separate thread - modified to ignore white in color mode
+// Process a chunk of the image in a separate thread - Updated to ignore white in color mode
 void BitmapConverter::processChunk(
     const QImage& img, int startY, int endY, int width, 
     double pixelSize, double strokeWidth, double inset,
@@ -841,7 +874,7 @@ void BitmapConverter::processChunk(
     std::cout << " (" << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
 }
 
-// Main conversion function with multithreading support
+// Main conversion function with multithreading support - Updated with color handling
 void BitmapConverter::convert(
    const std::string& inputFile, 
    const std::string& outputFile,
@@ -1004,7 +1037,7 @@ void BitmapConverter::convert(
            qint64 optimizeTime = optimizeTimer.elapsed();
            std::cout << "Path optimization complete. Time: " << optimizeTime << " ms" << std::endl;
            std::cout << "Original paths: " << allPaths.size() << ", Optimized paths: " << optimizedPaths.size() << std::endl;
-           writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape);
+           writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape, "black");
        } else {
            // Code for non-optimized path output (unchanged)
            if (params.optimizeForInkscape) {
