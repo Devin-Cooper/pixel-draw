@@ -195,6 +195,43 @@
       </layout>
      </widget>
     </item>
+    <!-- New Margin Group Box -->
+    <item>
+     <widget class="QGroupBox" name="marginGroupBox">
+      <property name="title">
+       <string>Margin</string>
+      </property>
+      <layout class="QHBoxLayout" name="horizontalLayout_6">
+       <item>
+        <widget class="QLabel" name="marginLabel">
+         <property name="text">
+          <string>Margin:</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QDoubleSpinBox" name="marginInput">
+         <property name="decimals">
+          <number>2</number>
+         </property>
+         <property name="minimum">
+          <double>0.000000000000000</double>
+         </property>
+         <property name="maximum">
+          <double>100.000000000000000</double>
+         </property>
+         <property name="singleStep">
+          <double>0.250000000000000</double>
+         </property>
+         <property name="value">
+          <double>0.000000000000000</double>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <!-- End of New Margin Group Box -->
     <item>
      <widget class="QGroupBox" name="strokeWidthGroupBox">
       <property name="title">
@@ -287,7 +324,7 @@
       </layout>
      </widget>
     </item>
-    <!-- New Color Mode Group Box -->
+    <!-- Color Mode Group Box -->
     <item>
      <widget class="QGroupBox" name="colorModeGroupBox">
       <property name="title">
@@ -314,7 +351,7 @@
       </layout>
      </widget>
     </item>
-    <!-- End of New Color Mode Group Box -->
+    <!-- End of Color Mode Group Box -->
     <item>
      <widget class="QGroupBox" name="optimizationGroupBox">
       <property name="title">
@@ -328,13 +365,6 @@
          </property>
          <property name="checked">
           <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="optimizeForInkscapeCheckbox">
-         <property name="text">
-          <string>Optimize for Inkscape</string>
          </property>
         </widget>
        </item>

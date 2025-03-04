@@ -16,7 +16,11 @@ double BitmapConverter::inchesToMm(double inches) { return inches * 25.4; }
 
 // Calculate pixel size to fit document dimensions
 double BitmapConverter::getPixelSizeFromDocSize(double docWidth, double docHeight, int pixelWidth, int pixelHeight) {
-   return std::min(docWidth / pixelWidth, docHeight / pixelHeight);
+   double pixSize = std::min(docWidth / pixelWidth, docHeight / pixelHeight);
+   std::cout << "getPixelSizeFromDocSize: " << docWidth << "x" << docHeight 
+             << " document for " << pixelWidth << "x" << pixelHeight 
+             << " pixels = " << pixSize << " size" << std::endl;
+   return pixSize;
 }
 
 // Generate zigzag pattern for pixel with special case handling for orthogonal angles
@@ -434,150 +438,69 @@ std::string BitmapConverter::formatPathForInkscape(const std::vector<PathSegment
     return ss.str();
 }
 
-// Write SVG with optimizations for Inkscape
+// Write SVG with optimizations for Inkscape (always used now)
 void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, 
-                                      bool forInkscape, const std::string& strokeColor) {
+                                      bool /* forInkscape - no longer used */, const std::string& strokeColor) {
     // Use the specified stroke color, or default to black if not provided
     std::string color = !strokeColor.empty() ? strokeColor : "black";
     
-    if (forInkscape) {
-        // Group outlines
-        svg << "  <g id=\"outlines\">\n";
-        for (const auto& path : optimizedPaths) {
-            bool isOutline = path.segments.size() == 4;
-            if (isOutline) {
-                std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
-                pathStr.replace(pathStr.find(" stroke=\"black\""), 15, " stroke=\"" + color + "\"");
-                svg << "    " << pathStr << "\n";
-            }
+    // Group outlines
+    svg << "  <g id=\"outlines\">\n";
+    for (const auto& path : optimizedPaths) {
+        bool isOutline = path.segments.size() == 4;
+        if (isOutline) {
+            std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
+            pathStr.replace(pathStr.find(" stroke=\"black\""), 15, " stroke=\"" + color + "\"");
+            svg << "    " << pathStr << "\n";
         }
-        svg << "  </g>\n";
-        
-        // Group zigzag fills (if any)
-        bool hasZigzags = false;
+    }
+    svg << "  </g>\n";
+    
+    // Group zigzag fills (if any)
+    bool hasZigzags = false;
+    for (const auto& path : optimizedPaths) {
+        if (path.segments.size() > 4) {
+            hasZigzags = true;
+            break;
+        }
+    }
+    
+    if (hasZigzags) {
+        svg << "  <g id=\"fills\">\n";
         for (const auto& path : optimizedPaths) {
             if (path.segments.size() > 4) {
-                hasZigzags = true;
-                break;
-            }
-        }
-        
-        if (hasZigzags) {
-            svg << "  <g id=\"fills\">\n";
-            for (const auto& path : optimizedPaths) {
-                if (path.segments.size() > 4) {
-                    // Check if this is a continuous zigzag path (segments with shared endpoints)
-                    bool isContinuous = true;
-                    for (size_t i = 1; i < path.segments.size(); i++) {
-                        if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
-                            std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
-                            isContinuous = false;
-                            break;
-                        }
-                    }
-                    
-                    if (isContinuous) {
-                        // For continuous zigzag, use a single polyline which is very efficient
-                        svg << "    <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
-                        
-                        for (const auto& segment : path.segments) {
-                            svg << " " << segment.x2 << "," << segment.y2;
-                        }
-                        svg << "\" fill=\"none\" stroke=\"" << color 
-                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
-                    } else {
-                        // For non-continuous zigzag, use a polyline for each segment
-                        for (const auto& segment : path.segments) {
-                            svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                                << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                                << "\" stroke=\"" << color 
-                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
-                        }
-                    }
-                }
-            }
-            svg << "  </g>\n";
-        }
-    } else {
-        // Original output format with improved zigzag handling
-        // Write outline paths
-        for (const auto& path : optimizedPaths) {
-            bool isOutline = path.segments.size() == 4;
-            if (isOutline) {
-                svg << "  <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
-                for (const auto& segment : path.segments) {
-                    svg << " L " << segment.x2 << " " << segment.y2;
-                }
-                svg << "\" fill=\"none\" stroke=\"" << color << "\" stroke-width=\"" 
-                    << path.strokeWidth << "\"/>\n";
-            }
-        }
-        
-        // Write zigzag paths
-        for (const auto& path : optimizedPaths) {
-            bool isOutline = path.segments.size() == 4;
-            if (!isOutline) {
                 // Check if this is a continuous zigzag path (segments with shared endpoints)
                 bool isContinuous = true;
                 for (size_t i = 1; i < path.segments.size(); i++) {
                     if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
                         std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
-                        isContinuous = false;
-                        break;
-                    }
+                            isContinuous = false;
+                            break;
+                        }
                 }
                 
                 if (isContinuous) {
-                    // For continuous zigzag, use a single polyline for efficiency
-                    svg << "  <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                    // For continuous zigzag, use a single polyline which is very efficient
+                    svg << "    <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
                     
                     for (const auto& segment : path.segments) {
                         svg << " " << segment.x2 << "," << segment.y2;
                     }
-                    svg << "\" fill=\"none\" stroke=\"" << color << "\" stroke-width=\"" 
-                        << path.strokeWidth << "\"/>\n";
+                    svg << "\" fill=\"none\" stroke=\"" << color 
+                        << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                 } else {
-                    // For non-continuous zigzag, use individual lines
+                    // For non-continuous zigzag, use a polyline for each segment
                     for (const auto& segment : path.segments) {
-                        svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                        svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                             << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                            << "\" stroke=\"" << color << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                            << "\" stroke=\"" << color 
+                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                     }
                 }
             }
         }
+        svg << "  </g>\n";
     }
-}
-
-// Extract unique colors from an image
-std::vector<ColorInfo> BitmapConverter::extractUniqueColors(const QImage& img) {
-    std::map<QRgb, ColorInfo> uniqueColors;
-    
-    // Scan image to find all unique non-transparent colors
-    for (int y = 0; y < img.height(); ++y) {
-        for (int x = 0; x < img.width(); ++x) {
-            QRgb pixel = img.pixel(x, y);
-            if (qAlpha(pixel) > 0) { // Skip fully transparent pixels
-                if (uniqueColors.find(pixel) == uniqueColors.end()) {
-                    ColorInfo colorInfo;
-                    colorInfo.color = pixel;
-                    colorInfo.svgColor = rgbToSvgColor(pixel);
-                    // Generate layer ID based on color
-                    int colorIndex = uniqueColors.size();
-                    colorInfo.layerId = QString("color_layer_%1").arg(colorIndex);
-                    uniqueColors[pixel] = colorInfo;
-                }
-            }
-        }
-    }
-    
-    // Convert map to vector
-    std::vector<ColorInfo> result;
-    for (const auto& pair : uniqueColors) {
-        result.push_back(pair.second);
-    }
-    
-    return result;
 }
 
 // Convert RGB color to SVG color string - Updated for transparency
@@ -602,7 +525,7 @@ QString BitmapConverter::rgbToSvgColor(QRgb color) {
 // Write SVG with color layers - Updated for proper color handling
 void BitmapConverter::writeColorLayersSvg(std::ofstream& svg, 
                                        const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
-                                       bool forInkscape) {
+                                       bool /* forInkscape - no longer used */) {
     std::cout << "Writing SVG with " << colorPathsMap.size() << " color layers..." << std::endl;
     
     // Write each color as a separate layer
@@ -614,124 +537,74 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
         svg << "  <g id=\"" << colorInfo.layerId.toStdString() << "\" "
             << "fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() << "\">\n";
         
-        // Use existing method for generating SVG content
-        if (forInkscape) {
-            // Group outlines
-            bool hasOutlines = false;
+        // Always use Inkscape-optimized format
+        // Group outlines
+        bool hasOutlines = false;
+        for (const auto& path : paths) {
+            if (path.segments.size() == 4) {
+                hasOutlines = true;
+                break;
+            }
+        }
+        
+        if (hasOutlines) {
+            svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_outlines\">\n";
             for (const auto& path : paths) {
                 if (path.segments.size() == 4) {
-                    hasOutlines = true;
-                    break;
+                    // Use explicit color for each path to ensure color is preserved
+                    std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
+                    // Remove the default stroke color and add our color
+                    pathStr.replace(pathStr.find(" stroke=\"black\""), 15, 
+                                   " stroke=\"" + colorInfo.svgColor.toStdString() + "\"");
+                    svg << "      " << pathStr << "\n";
                 }
             }
-            
-            if (hasOutlines) {
-                svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_outlines\">\n";
-                for (const auto& path : paths) {
-                    if (path.segments.size() == 4) {
-                        // Use explicit color for each path to ensure color is preserved
-                        std::string pathStr = formatPathForInkscape(path.segments, path.strokeWidth);
-                        // Remove the default stroke color and add our color
-                        pathStr.replace(pathStr.find(" stroke=\"black\""), 15, 
-                                       " stroke=\"" + colorInfo.svgColor.toStdString() + "\"");
-                        svg << "      " << pathStr << "\n";
-                    }
-                }
-                svg << "    </g>\n";
+            svg << "    </g>\n";
+        }
+        
+        // Group zigzag fills (if any)
+        bool hasZigzags = false;
+        for (const auto& path : paths) {
+            if (path.segments.size() > 4) {
+                hasZigzags = true;
+                break;
             }
-            
-            // Group zigzag fills (if any)
-            bool hasZigzags = false;
+        }
+        
+        if (hasZigzags) {
+            svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_fills\">\n";
             for (const auto& path : paths) {
                 if (path.segments.size() > 4) {
-                    hasZigzags = true;
-                    break;
-                }
-            }
-            
-            if (hasZigzags) {
-                svg << "    <g id=\"" << colorInfo.layerId.toStdString() << "_fills\">\n";
-                for (const auto& path : paths) {
-                    if (path.segments.size() > 4) {
-                        // Check if this is a continuous zigzag path
-                        bool isContinuous = true;
-                        for (size_t i = 1; i < path.segments.size(); i++) {
-                            if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
-                                std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
-                                isContinuous = false;
-                                break;
-                            }
-                        }
-                        
-                        if (isContinuous) {
-                            // For continuous zigzag, use a single polyline
-                            svg << "      <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
-                            for (const auto& segment : path.segments) {
-                                svg << " " << segment.x2 << "," << segment.y2;
-                            }
-                            svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
-                        } else {
-                            // For non-continuous zigzag, use individual lines
-                            for (const auto& segment : path.segments) {
-                                svg << "      <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                                    << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                                    << "\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                                    << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
-                            }
-                        }
-                    }
-                }
-                svg << "    </g>\n";
-            }
-        } else {
-            // Non-Inkscape optimized format
-            // Write outline paths
-            for (const auto& path : paths) {
-                bool isOutline = path.segments.size() == 4;
-                if (isOutline) {
-                    svg << "    <path d=\"M " << path.segments[0].x1 << " " << path.segments[0].y1;
-                    for (const auto& segment : path.segments) {
-                        svg << " L " << segment.x2 << " " << segment.y2;
-                    }
-                    svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                        << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
-                }
-            }
-            
-            // Write zigzag paths
-            for (const auto& path : paths) {
-                bool isOutline = path.segments.size() == 4;
-                if (!isOutline) {
                     // Check if this is a continuous zigzag path
                     bool isContinuous = true;
                     for (size_t i = 1; i < path.segments.size(); i++) {
                         if (std::abs(path.segments[i].x1 - path.segments[i-1].x2) > 1e-10 ||
                             std::abs(path.segments[i].y1 - path.segments[i-1].y2) > 1e-10) {
-                            isContinuous = false;
-                            break;
-                        }
+                                isContinuous = false;
+                                break;
+                            }
                     }
                     
                     if (isContinuous) {
                         // For continuous zigzag, use a single polyline
-                        svg << "    <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
+                        svg << "      <polyline points=\"" << path.segments[0].x1 << "," << path.segments[0].y1;
                         for (const auto& segment : path.segments) {
                             svg << " " << segment.x2 << "," << segment.y2;
                         }
                         svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                            << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                     } else {
                         // For non-continuous zigzag, use individual lines
                         for (const auto& segment : path.segments) {
-                            svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                            svg << "      <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                 << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
                                 << "\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                                << "\" stroke-width=\"" << path.strokeWidth << "\"/>\n";
+                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
                         }
                     }
                 }
             }
+            svg << "    </g>\n";
         }
         
         svg << "  </g>\n";
@@ -740,7 +613,7 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
     std::cout << "Finished writing color layers" << std::endl;
 }
 
-// Process a chunk of the image in a separate thread - Updated to ignore white in color mode
+// Process a chunk of the image in a separate thread - Updated with size validation
 void BitmapConverter::processChunk(
     const QImage& img, int startY, int endY, int width, 
     double pixelSize, double strokeWidth, double inset,
@@ -758,10 +631,18 @@ void BitmapConverter::processChunk(
             if (params.colorMode == ColorMode::Monochrome) {
                 // Process monochrome pixels
                 if (img.pixelColor(x, y).value() == 0) {
-                    double px = x * pixelSize + inset;
+                    // Calculate pixel position - ensure positive sizes
+                    double px = x * pixelSize + inset; 
                     double py = y * pixelSize + inset;
-                    double pwidth = pixelSize - strokeWidth;
-                    double pheight = pixelSize - strokeWidth;
+                    double pwidth = std::max(0.001, pixelSize - 2 * inset);  // Ensure positive width
+                    double pheight = std::max(0.001, pixelSize - 2 * inset); // Ensure positive height
+
+                    // Add debug - only for the first few pixels
+                    if (x < 3 && y < 3) {
+                        std::cout << "Pixel at (" << x << "," << y << ") positioned at (" 
+                                << px << "," << py << ") with size " << pwidth << "x" << pheight 
+                                << " and stroke width " << strokeWidth << std::endl;
+                    }
 
                     std::vector<PathSegment> pixelPaths;
                     // Add outline
@@ -787,7 +668,7 @@ void BitmapConverter::processChunk(
                     processedPixels++;
                 }
             } else {
-                // Process color pixels
+                // Process color pixels with similar size validation
                 QRgb pixelColor = img.pixel(x, y);
                 
                 // Skip transparent pixels
@@ -812,10 +693,18 @@ void BitmapConverter::processChunk(
                 currentColor.color = pixelColor;
                 currentColor.svgColor = rgbToSvgColor(pixelColor);
                 
-                double px = x * pixelSize + inset;
+                // Calculate pixel position - ensure positive sizes
+                double px = x * pixelSize + inset; 
                 double py = y * pixelSize + inset;
-                double pwidth = pixelSize - strokeWidth;
-                double pheight = pixelSize - strokeWidth;
+                double pwidth = std::max(0.001, pixelSize - 2 * inset);  // Ensure positive width
+                double pheight = std::max(0.001, pixelSize - 2 * inset); // Ensure positive height
+                
+                // Add debug - only for the first few pixels
+                if (x < 3 && y < 3) {
+                    std::cout << "Color Pixel at (" << x << "," << y << ") positioned at (" 
+                            << px << "," << py << ") with size " << pwidth << "x" << pheight 
+                            << " and stroke width " << strokeWidth << std::endl;
+                }
 
                 std::vector<PathSegment> pixelPaths;
                 // Add outline
@@ -874,7 +763,7 @@ void BitmapConverter::processChunk(
     std::cout << " (" << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
 }
 
-// Main conversion function with multithreading support - Updated with color handling
+// Main conversion function with multithreading support - Fixed document and pixel size handling
 void BitmapConverter::convert(
    const std::string& inputFile, 
    const std::string& outputFile,
@@ -888,10 +777,37 @@ void BitmapConverter::convert(
    std::cout << "Input file: " << inputFile << std::endl;
    std::cout << "Output file: " << outputFile << std::endl;
    
+   // Debug document size
+   std::cout << "\n========== Document Size Debug ==========\n";
+   std::cout << "Document size from parameters: " << params.docWidth << "x" << params.docHeight 
+             << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   std::cout << "Margin from parameters: " << params.margin 
+             << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   std::cout << "Pixel size from parameters: " << params.pixelSize 
+             << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   
+   // Debug parameter info
+   std::cout << "\nInput parameters:" << std::endl;
+   std::cout << "Units: " << (params.units == Units::Inches ? "Inches" : "MM") << std::endl;
+   std::cout << "Fill type: " << (params.fillType == FillType::Zigzag ? "Zigzag" : "Solid") << std::endl;
+   std::cout << "Color mode: " << (params.colorMode == ColorMode::Monochrome ? "Monochrome" : "Color") << std::endl;
+   std::cout << "Stroke width: " << params.strokeWidth << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   
+   if (params.pixelSize > 0.001) {
+       std::cout << "Pixel size: " << params.pixelSize << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   } else {
+       std::cout << "Document size: " << params.docWidth << "x" << params.docHeight << " " 
+                 << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   }
+   
+   std::cout << "Margin: " << params.margin << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+   std::cout << "Optimize: " << (params.optimize ? "Yes" : "No") << std::endl;
+   std::cout << "Thread count: " << params.numThreads << " (" << (params.numThreads == 0 ? "Auto" : "Manual") << ")" << std::endl;
+   
    QImage img(QString::fromStdString(inputFile));
    if (img.isNull()) throw std::runtime_error("Failed to load image");
    
-   std::cout << "Image loaded successfully. Dimensions: " << img.width() << "x" << img.height() << std::endl;
+   std::cout << "Image loaded successfully. Dimensions: " << img.width() << "x" << img.height() << " pixels" << std::endl;
    
    // Handle image format based on color mode
    if (params.colorMode == ColorMode::Monochrome) {
@@ -906,27 +822,165 @@ void BitmapConverter::convert(
    int width = img.width();
    int height = img.height();
 
-   // Calculate sizes in mm
+   // Create local copies of document dimensions that we can modify
+   double docWidth = params.docWidth;
+   double docHeight = params.docHeight;
+   
+   // Convert document dimensions to points (72dpi)
+   double docWidthPoints = 0, docHeightPoints = 0;
+   
+   // Always use document dimensions from params (when available) - FIXED
+   if (params.pixelSize <= 0.001) { // Only if pixel size is not explicitly set
+       // Validate document dimensions - minimum size is 1 inch
+       if (docWidth < 1 || docHeight < 1) {
+           std::cout << "WARNING: Document dimensions too small: " << docWidth << "x" << docHeight 
+                     << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
+           std::cout << "Using default letter size (8.5x11 inches) instead\n";
+           
+           // Use standard letter size as default
+           if (params.units == Units::Inches) {
+               docWidth = 8.5;
+               docHeight = 11.0;
+           } else {
+               // Convert from inches to mm
+               docWidth = 215.9;  // 8.5 inches in mm
+               docHeight = 279.4; // 11 inches in mm
+           }
+       }
+       
+       // Convert document dimensions to points
+       if (params.units == Units::Inches) {
+           docWidthPoints = docWidth * 72;
+           docHeightPoints = docHeight * 72;
+       } else {
+           docWidthPoints = (docWidth / 25.4) * 72;
+           docHeightPoints = (docHeight / 25.4) * 72;
+       }
+       
+       std::cout << "Using document dimensions: " << docWidth << "x" << docHeight
+                 << " " << (params.units == Units::Inches ? "inches" : "mm")
+                 << " (" << docWidthPoints << "x" << docHeightPoints << " points)\n";
+   }
+
+   // Calculate sizes in mm - FIXED to handle tiny pixel sizes
    double pixelSizeMm;
+   bool useExplicitPixelSize = (params.pixelSize > 0.001); // Only use explicit pixel size if it's reasonable
+   
    if (params.units == Units::Inches) {
-       pixelSizeMm = params.pixelSize ? inchesToMm(params.pixelSize) : 
-                     getPixelSizeFromDocSize(inchesToMm(params.docWidth), 
-                                          inchesToMm(params.docHeight), 
-                                          width, height);
+       // If pixel size is directly specified and reasonable
+       if (useExplicitPixelSize) {
+           std::cout << "Using explicit pixel size: " << params.pixelSize << " inches\n";
+           pixelSizeMm = inchesToMm(params.pixelSize);
+       } 
+       // If document size is specified, subtract margins first to get printable area
+       else {
+           // Calculate available space after margins
+           double availableWidth = docWidth - 2 * params.margin;
+           double availableHeight = docHeight - 2 * params.margin;
+           // Ensure we have positive dimensions
+           availableWidth = std::max(0.1, availableWidth);
+           availableHeight = std::max(0.1, availableHeight);
+           std::cout << "Available content area: " << availableWidth << "x" << availableHeight << " inches\n";
+           
+           // Calculate pixel size to fit within available space
+           pixelSizeMm = getPixelSizeFromDocSize(inchesToMm(availableWidth), 
+                                              inchesToMm(availableHeight), 
+                                              width, height);
+       }
        std::cout << "Units: Inches" << std::endl;
+       std::cout << "Document size: " << docWidth << "x" << docHeight << " inches" << std::endl;
+       std::cout << "Margin: " << params.margin << " inches" << std::endl;
    } else {
-       pixelSizeMm = params.pixelSize ? params.pixelSize : 
-                     getPixelSizeFromDocSize(params.docWidth, params.docHeight, 
-                                          width, height);
+       // Same logic for mm units
+       if (useExplicitPixelSize) {
+           std::cout << "Using explicit pixel size: " << params.pixelSize << " mm\n";
+           pixelSizeMm = params.pixelSize;
+       } else {
+           double availableWidth = docWidth - 2 * params.margin;
+           double availableHeight = docHeight - 2 * params.margin;
+           availableWidth = std::max(0.1, availableWidth);
+           availableHeight = std::max(0.1, availableHeight);
+           std::cout << "Available content area: " << availableWidth << "x" << availableHeight << " mm\n";
+           
+           pixelSizeMm = getPixelSizeFromDocSize(availableWidth, availableHeight, 
+                                              width, height);
+       }
        std::cout << "Units: Millimeters" << std::endl;
+       std::cout << "Document size: " << docWidth << "x" << docHeight << " mm" << std::endl;
+       std::cout << "Margin: " << params.margin << " mm" << std::endl;
    }
 
    // Convert to points (72dpi)
    double pixelSize = (pixelSizeMm / 25.4) * 72;
+   
+   // Validate pixel size - ensure it's not too small
+   if (pixelSize < 0.1) {
+       std::cout << "WARNING: Calculated pixel size too small: " << pixelSize << " points" << std::endl;
+       // Recalculate based on document dimensions and margin
+       double availableWidthPoints = docWidthPoints - 2 * (params.units == Units::Inches ? params.margin * 72 : (params.margin / 25.4) * 72);
+       double availableHeightPoints = docHeightPoints - 2 * (params.units == Units::Inches ? params.margin * 72 : (params.margin / 25.4) * 72);
+       
+       if (availableWidthPoints < 10 || availableHeightPoints < 10) {
+           std::cout << "ERROR: Available area too small for content. Using default document size." << std::endl;
+           docWidthPoints = 14 * 72; // 14 inches
+           docHeightPoints = 11 * 72; // 11 inches
+           availableWidthPoints = docWidthPoints - 2 * 72; // 1 inch margins
+           availableHeightPoints = docHeightPoints - 2 * 72;
+       }
+       
+       pixelSize = std::min(availableWidthPoints / width, availableHeightPoints / height);
+       std::cout << "Recalculated pixel size: " << pixelSize << " points" << std::endl;
+   }
+   
    double strokeWidth = ((params.units == Units::Inches ? 
                          inchesToMm(params.strokeWidth) : 
                          params.strokeWidth) / 25.4) * 72;
+   
    double inset = strokeWidth / 2;
+
+   // Convert margin to points (72dpi)
+   double marginPoints = 0;
+   if (params.units == Units::Inches) {
+       marginPoints = params.margin * 72;  // 72 points per inch
+   } else {
+       marginPoints = (params.margin / 25.4) * 72;  // Convert mm to inches, then to points
+   }
+
+   std::cout << "Pixel size: " << pixelSize << " points" << std::endl;
+   std::cout << "Applying margin: " << params.margin << " " 
+             << (params.units == Units::Inches ? "inches" : "mm") 
+             << " (" << marginPoints << " points)" << std::endl;
+
+   // Calculate content dimensions (without margin)
+   double contentWidth = width * pixelSize;
+   double contentHeight = height * pixelSize;
+   
+   std::cout << "Content dimensions before adjustment: " << contentWidth << "x" << contentHeight << " points" << std::endl;
+
+   // Determine the total document dimensions - FIXED logic
+   if (useExplicitPixelSize) {
+       // When pixel size is explicitly specified, calculate document size from content
+       docWidthPoints = contentWidth + 2 * marginPoints;
+       docHeightPoints = contentHeight + 2 * marginPoints;
+   } else {
+       // When document size is specified in the params, honor that size
+       // docWidthPoints and docHeightPoints already set above
+   }
+
+   // Validate final document dimensions - ensure they're not too small
+   if (docWidthPoints < 72 || docHeightPoints < 72) { // Less than 1 inch
+       std::cout << "WARNING: Final document dimensions too small. Setting to default 14x11 inches." << std::endl;
+       docWidthPoints = 14 * 72; // 14 inches
+       docHeightPoints = 11 * 72; // 11 inches
+   }
+
+   // Use docWidthPoints and docHeightPoints as the total dimensions
+   double totalWidth = docWidthPoints;
+   double totalHeight = docHeightPoints;
+
+   std::cout << "Content dimensions: " << contentWidth << "x" << contentHeight << " points" << std::endl;
+   std::cout << "Total document dimensions: " << totalWidth << "x" << totalHeight << " points" << std::endl;
+   std::cout << "Total document in inches: " << (totalWidth/72) << "x" << (totalHeight/72) << " inches" << std::endl;
 
    // Determine number of threads to use
    int numThreads = params.numThreads;
@@ -1000,25 +1054,56 @@ void BitmapConverter::convert(
    std::ofstream svg(outputFile);
    if (!svg) throw std::runtime_error("Failed to create output file");
 
-   // Write SVG header
+   // Write SVG header with total dimensions including margin and explicit units
    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n";
-   if (params.optimizeForInkscape) {
-       svg << "<!-- Created with Bitmap Converter (Inkscape optimized) -->\n";
-       svg << "<svg xmlns:svg=\"http://www.w3.org/2000/svg\" "
-           << "xmlns=\"http://www.w3.org/2000/svg\" "
-           << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
-           << "width=\"" << width * pixelSize << "px\" "
-           << "height=\"" << height * pixelSize << "px\" "
-           << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
-           << "version=\"1.1\">\n";
-       svg << "<title>Bitmap Conversion</title>\n";
-       svg << "<desc>Converted from " << inputFile << "</desc>\n";
-   } else {
-       svg << "<svg width=\"" << width * pixelSize << "px\" "
-           << "height=\"" << height * pixelSize << "px\" "
-           << "viewBox=\"0 0 " << width * pixelSize << " " << height * pixelSize << "\" "
-           << "xmlns=\"http://www.w3.org/2000/svg\">\n";
-   }
+   
+   // Calculate dimensions in inches for Inkscape compatibility
+   double docWidthInches = totalWidth / 72.0;
+   double docHeightInches = totalHeight / 72.0;
+   
+   svg << "<!-- Created with Bitmap Converter (Inkscape optimized) -->\n";
+   svg << "<svg xmlns:svg=\"http://www.w3.org/2000/svg\" "
+       << "xmlns=\"http://www.w3.org/2000/svg\" "
+       << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+       << "xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" "
+       << "width=\"" << docWidthInches << "in\" "
+       << "height=\"" << docHeightInches << "in\" "
+       << "viewBox=\"0 0 " << totalWidth << " " << totalHeight << "\" "
+       << "inkscape:version=\"1.0\" "
+       << "inkscape:document-units=\"in\" "
+       << "version=\"1.1\">\n";
+   svg << "<title>Bitmap Conversion</title>\n";
+   svg << "<desc>Converted from " << inputFile << " with " << params.margin << " " 
+       << (params.units == Units::Inches ? "inch" : "mm") << " margin</desc>\n";
+
+   // Add metadata to ensure proper document size
+   svg << "<metadata>\n";
+   svg << "  <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" "
+       << "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
+       << "xmlns:cc=\"http://creativecommons.org/ns#\">\n";
+   svg << "    <rdf:Description>\n";
+   svg << "      <dc:format>image/svg+xml</dc:format>\n";
+   svg << "      <dc:type rdf:resource=\"http://purl.org/dc/dcmitype/StillImage\"/>\n";
+   svg << "    </rdf:Description>\n";
+   svg << "  </rdf:RDF>\n";
+   svg << "</metadata>\n";
+
+   // Debug output to help understand the issue
+   std::cout << "\nDEBUG TRANSFORM:\n";
+   std::cout << "Margin Points: " << marginPoints << "\n";
+   std::cout << "Content Width/Height: " << contentWidth << "x" << contentHeight << "\n";
+   std::cout << "Total Width/Height: " << totalWidth << "x" << totalHeight << "\n";
+   
+   // Create a transform that correctly positions content at the top-left corner with margin
+   // NOT at the center of the document
+   svg << "<g transform=\"translate(" << marginPoints << "," << marginPoints << ")\" "
+       << "inkscape:label=\"Content with Margin\">\n";
+   
+   // Optional: Add a background rectangle to visualize the content area
+   svg << "  <!-- Content area outline for debugging -->\n";
+   svg << "  <rect x=\"0\" y=\"0\" width=\"" << contentWidth 
+       << "\" height=\"" << contentHeight 
+       << "\" fill=\"none\" stroke=\"#cccccc\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\" />\n";
 
    // Start optimization timer
    QElapsedTimer optimizeTimer;
@@ -1037,54 +1122,43 @@ void BitmapConverter::convert(
            qint64 optimizeTime = optimizeTimer.elapsed();
            std::cout << "Path optimization complete. Time: " << optimizeTime << " ms" << std::endl;
            std::cout << "Original paths: " << allPaths.size() << ", Optimized paths: " << optimizedPaths.size() << std::endl;
-           writeOptimizedSvg(svg, optimizedPaths, params.optimizeForInkscape, "black");
+           writeOptimizedSvg(svg, optimizedPaths, true, "black");
        } else {
-           // Code for non-optimized path output (unchanged)
-           if (params.optimizeForInkscape) {
-               // Group all outline segments
-               svg << "  <g id=\"outlines\">\n";
+           // Code for non-optimized path output - always using Inkscape optimized format
+           // Group all outline segments
+           svg << "  <g id=\"outlines\">\n";
+           for (const auto& pixelPaths : allPaths) {
+               for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
+                   const auto& segment = pixelPaths[i];
+                   svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                       << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+               }
+           }
+           svg << "  </g>\n";
+           
+           // Group all fill segments
+           bool hasFills = false;
+           for (const auto& pixelPaths : allPaths) {
+               if (pixelPaths.size() > 4) {
+                   hasFills = true;
+                   break;
+               }
+           }
+           
+           if (hasFills) {
+               svg << "  <g id=\"fills\">\n";
                for (const auto& pixelPaths : allPaths) {
-                   for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
-                       const auto& segment = pixelPaths[i];
-                       svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                           << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                           << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                   if (pixelPaths.size() > 4) {
+                       for (size_t i = 4; i < pixelPaths.size(); i++) {
+                           const auto& segment = pixelPaths[i];
+                           svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
+                               << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
+                               << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                       }
                    }
                }
                svg << "  </g>\n";
-               
-               // Group all fill segments
-               bool hasFills = false;
-               for (const auto& pixelPaths : allPaths) {
-                   if (pixelPaths.size() > 4) {
-                       hasFills = true;
-                       break;
-                   }
-               }
-               
-               if (hasFills) {
-                   svg << "  <g id=\"fills\">\n";
-                   for (const auto& pixelPaths : allPaths) {
-                       if (pixelPaths.size() > 4) {
-                           for (size_t i = 4; i < pixelPaths.size(); i++) {
-                               const auto& segment = pixelPaths[i];
-                               svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                                   << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                                   << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
-                           }
-                       }
-                   }
-                   svg << "  </g>\n";
-               }
-           } else {
-               // Original non-optimized output format
-               for (const auto& pixelPaths : allPaths) {
-                   for (const auto& segment : pixelPaths) {
-                       svg << "  <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
-                           << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                           << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
-                   }
-               }
            }
        }
    } else {
@@ -1149,10 +1223,12 @@ void BitmapConverter::convert(
        qint64 optimizeTime = optimizeTimer.elapsed();
        std::cout << "Color path optimization complete. Time: " << optimizeTime << " ms" << std::endl;
        
-       // Write all color layers to SVG
-       writeColorLayersSvg(svg, optimizedPathsByColor, params.optimizeForInkscape);
+       // Write all color layers to SVG - always using Inkscape optimized format
+       writeColorLayersSvg(svg, optimizedPathsByColor, true);
    }
 
+   // Close the transform group
+   svg << "</g>\n";
    svg << "</svg>\n";
    
    qint64 svgWriteTime = svgTimer.elapsed();
@@ -1163,11 +1239,12 @@ void BitmapConverter::convert(
    std::cout << "Total conversion time: " << totalTime << " ms\n";
    std::cout << "- Processing time: " << processingTime << " ms (" 
              << (processingTime * 100 / totalTime) << "%)\n";
-   std::cout << "- Optimization time: " << optimizeTimer.elapsed() << " ms ("
-             << (optimizeTimer.elapsed() * 100 / totalTime) << "%)\n";
    std::cout << "- SVG writing time: " << svgWriteTime << " ms (" 
              << (svgWriteTime * 100 / totalTime) << "%)\n";
    std::cout << "Threads used: " << numThreads << "\n";
    std::cout << "Output file: " << outputFile << "\n";
+   std::cout << "Margin: " << params.margin << " " 
+             << (params.units == Units::Inches ? "inches" : "mm") << "\n";
+   std::cout << "Total document size: " << (totalWidth/72) << "x" << (totalHeight/72) << " inches\n";
    std::cout << "========================================\n";
 }

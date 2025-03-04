@@ -26,6 +26,7 @@ struct ConverterParams {
    double pixelSize;         ///< Size of each pixel in the selected units (if set)
    double docWidth;          ///< Document width in the selected units (if pixelSize not set)
    double docHeight;         ///< Document height in the selected units (if pixelSize not set)
+   double margin;            ///< Margin around the SVG content in the selected units
    double angle;             ///< Angle for zigzag fill in degrees
    bool optimize;            ///< Whether to optimize path connections
    bool optimizeForInkscape; ///< Whether to optimize output for Inkscape

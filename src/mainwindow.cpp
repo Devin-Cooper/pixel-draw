@@ -78,12 +78,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->solidRadio->setChecked(true);
     ui->monochromeRadio->setChecked(true); // Default to monochrome mode
     ui->optimizeCheckbox->setChecked(true);
-    ui->optimizeForInkscapeCheckbox->setChecked(false);
     ui->pixelSizeInput->setValue(1.0);
     ui->strokeWidthInput->setValue(0.1);
     ui->angleInput->setValue(45.0);
     ui->docWidthInput->setValue(100.0);
     ui->docHeightInput->setValue(100.0);
+    ui->marginInput->setValue(0.0); // Default to 0 margin
+
+    // Set tooltip for margin input
+    ui->marginInput->setToolTip("Margin around the SVG content (in selected units)");
 
     // Load previously saved settings from persistent storage
     // This must happen BEFORE connecting signals to avoid saving during loading
@@ -109,11 +112,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             this, &MainWindow::saveSettings);
     connect(ui->docHeightInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
             this, &MainWindow::saveSettings);
+    connect(ui->marginInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
+            this, &MainWindow::saveSettings);
     
     // For checkboxes
-    connect(ui->optimizeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
-    connect(ui->optimizeForInkscapeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
-    
+    connect(ui->optimizeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);    
     // For radio button groups
     connect(sizeTypeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::saveSettings);
     connect(unitsGroup, &QButtonGroup::buttonClicked, this, &MainWindow::saveSettings);
@@ -180,14 +183,16 @@ void MainWindow::convert() {
         params.fillType = fillTypeGroup->checkedButton()->text() == "Zigzag" ? FillType::Zigzag : FillType::Solid;
         params.strokeWidth = ui->strokeWidthInput->value();
         params.optimize = ui->optimizeCheckbox->isChecked();
-        params.optimizeForInkscape = ui->optimizeForInkscapeCheckbox->isChecked();
         params.numThreads = threadCountSpinBox->value();
+        params.margin = ui->marginInput->value(); // Set margin from UI
         
         std::cout << "\n***** Starting conversion with parameters *****" << std::endl;
         std::cout << "Thread count: " << params.numThreads 
                   << (params.numThreads == 0 ? " (Auto)" : "") << std::endl;
         std::cout << "Fill type: " << (params.fillType == FillType::Zigzag ? "Zigzag" : "Solid") << std::endl;
         std::cout << "Stroke width: " << params.strokeWidth << std::endl;
+        std::cout << "Margin: " << params.margin << " " 
+                  << (params.units == Units::MM ? "mm" : "inches") << std::endl;
         std::cout << "Optimize: " << (params.optimize ? "Yes" : "No") << std::endl;
         std::cout << "Optimize for Inkscape: " << (params.optimizeForInkscape ? "Yes" : "No") << std::endl;
         
@@ -281,10 +286,10 @@ void MainWindow::saveSettings() {
     settings.setValue("angle", ui->angleInput->value());
     settings.setValue("docWidth", ui->docWidthInput->value());
     settings.setValue("docHeight", ui->docHeightInput->value());
+    settings.setValue("margin", ui->marginInput->value()); // Save margin setting
     
     // Save checkbox states
     settings.setValue("optimize", ui->optimizeCheckbox->isChecked());
-    settings.setValue("optimizeForInkscape", ui->optimizeForInkscapeCheckbox->isChecked());
     
     // Save thread count
     settings.setValue("threadCount", threadCountSpinBox->value());
@@ -312,10 +317,10 @@ void MainWindow::loadSettings() {
     ui->angleInput->setValue(settings.value("angle", 45.0).toDouble());
     ui->docWidthInput->setValue(settings.value("docWidth", 100.0).toDouble());
     ui->docHeightInput->setValue(settings.value("docHeight", 100.0).toDouble());
+    ui->marginInput->setValue(settings.value("margin", 0.0).toDouble()); // Load margin setting
     
     // Then load checkbox states
     ui->optimizeCheckbox->setChecked(settings.value("optimize", true).toBool());
-    ui->optimizeForInkscapeCheckbox->setChecked(settings.value("optimizeForInkscape", false).toBool());
     
     // Load thread count
     int threadCount = settings.value("threadCount", 0).toInt();
