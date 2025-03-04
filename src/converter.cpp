@@ -1093,11 +1093,14 @@ void BitmapConverter::convert(
    std::cout << "Margin Points: " << marginPoints << "\n";
    std::cout << "Content Width/Height: " << contentWidth << "x" << contentHeight << "\n";
    std::cout << "Total Width/Height: " << totalWidth << "x" << totalHeight << "\n";
-   
-   // Create a transform that correctly positions content at the top-left corner with margin
-   // NOT at the center of the document
-   svg << "<g transform=\"translate(" << marginPoints << "," << marginPoints << ")\" "
-       << "inkscape:label=\"Content with Margin\">\n";
+       
+    // Calculate centering offsets
+    double xOffset = marginPoints + (totalWidth - contentWidth - 2 * marginPoints) / 2;
+    double yOffset = marginPoints + (totalHeight - contentHeight - 2 * marginPoints) / 2;
+
+    // Create a transform that centers content within the margins
+    svg << "<g transform=\"translate(" << xOffset << "," << yOffset << ")\" "
+        << "inkscape:label=\"Centered Content with Margin\">\n";
    
    // Optional: Add a background rectangle to visualize the content area
    svg << "  <!-- Content area outline for debugging -->\n";
