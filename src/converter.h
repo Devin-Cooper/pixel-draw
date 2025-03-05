@@ -11,6 +11,13 @@
 #include <mutex>
 #include <atomic>
 
+
+// Forward declarations
+class PathOptimizer;
+class SvgWriter;
+class ColorHandler;
+class GeometryUtils;
+
 enum class Units { MM, Inches };
 enum class FillType { Solid, Zigzag };
 enum class ColorMode { Monochrome, PreserveColors }; 
@@ -32,7 +39,7 @@ struct ConverterParams {
    bool optimizeForInkscape; ///< Whether to optimize output for Inkscape
    int numThreads;           ///< Number of threads to use (0 = auto)
    
-   // New plotter-specific options
+   // Plotter-specific options
    bool optimizeColorOrder;     ///< Order colors by luminosity (dark to light)
    bool groupSimilarColors;     ///< Group similar colors to reduce pen changes
    double colorSimilarityThreshold; ///< Threshold for grouping similar colors (0-255)
@@ -78,10 +85,29 @@ struct ColorInfo {
 };
 
 /**
+ * @brief Thread-safe data structure to collect paths from multiple threads
+ */
+struct ThreadContext {
+   std::vector<std::vector<PathSegment>> paths;
+   std::map<ColorInfo, std::vector<std::vector<PathSegment>>> colorPaths;
+   std::mutex mutex;
+};
+
+/**
  * @brief Class to convert bitmap images to SVG
  */
 class BitmapConverter {
 public:
+   /**
+    * @brief Constructor
+    */
+   BitmapConverter();
+   
+   /**
+    * @brief Destructor
+    */
+   ~BitmapConverter();
+
    /**
     * @brief Convert a bitmap image to SVG
     * @param inputFile Path to the input bitmap file
@@ -91,15 +117,6 @@ public:
    void convert(const std::string& inputFile, const std::string& outputFile, const ConverterParams& params);
 
 private:
-   /**
-    * @brief Thread-safe data structure to collect paths from multiple threads
-    */
-   struct ThreadContext {
-       std::vector<std::vector<PathSegment>> paths;
-       std::map<ColorInfo, std::vector<std::vector<PathSegment>>> colorPaths;
-       std::mutex mutex;
-   };
-   
    /**
     * @brief Process a chunk of the image in a separate thread
     * @param img The image to process
@@ -113,31 +130,18 @@ private:
     * @param context Thread context for collecting results
     */
    void processChunk(const QImage& img, int startY, int endY, int width, 
-                  double pixelSize, double strokeWidth, double inset,
-                  const ConverterParams& params, ThreadContext& context);
+                    double pixelSize, double strokeWidth, double inset,
+                    const ConverterParams& params, ThreadContext& context);
 
    /**
-    * @brief Optimize a chunk of paths in parallel
-    * @param chunkPaths Vector of paths to optimize
-    * @param strokeWidth Stroke width
-    * @param chunkIndex Index of this chunk
-    * @param totalChunks Total number of chunks
-    * @return Vector of optimized paths
+    * @brief Calculate pixel size to fit document dimensions
+    * @param docWidth Document width
+    * @param docHeight Document height
+    * @param pixelWidth Image width in pixels
+    * @param pixelHeight Image height in pixels
+    * @return Pixel size to fit the document
     */
-   std::vector<OptimizedPath> optimizePathChunk(
-      const std::vector<std::vector<PathSegment>>& chunkPaths, 
-      double strokeWidth, int chunkIndex, int totalChunks);
-
-   /**
-    * @brief Optimize paths for a single color
-    * @param colorPaths Vector of paths for this color
-    * @param strokeWidth Stroke width
-    * @param colorName Color name for logging
-    * @return Vector of optimized paths
-    */
-   std::vector<OptimizedPath> optimizeColorPaths(
-      const std::vector<std::vector<PathSegment>>& colorPaths, 
-      double strokeWidth, const QString& colorName);
+   double getPixelSizeFromDocSize(double docWidth, double docHeight, int pixelWidth, int pixelHeight);
 
    /**
     * @brief Convert millimeters to inches
@@ -152,185 +156,10 @@ private:
     * @return Value in millimeters
     */
    double inchesToMm(double inches);
-   
-   /**
-    * @brief Calculate pixel size to fit document dimensions
-    * @param docWidth Document width
-    * @param docHeight Document height
-    * @param pixelWidth Image width in pixels
-    * @param pixelHeight Image height in pixels
-    * @return Pixel size to fit the document
-    */
-   double getPixelSizeFromDocSize(double docWidth, double docHeight, int pixelWidth, int pixelHeight);
-   
-   /**
-    * @brief Create zigzag fill pattern for a pixel
-    * @param x X coordinate of the pixel's top-left corner
-    * @param y Y coordinate of the pixel's top-left corner
-    * @param width Width of the pixel
-    * @param height Height of the pixel
-    * @param strokeWidth Width of the stroke
-    * @param angle Angle of the zigzag lines in degrees
-    * @return Vector of line segments forming the zigzag pattern
-    */
-   std::vector<std::array<double, 4>> createZigzagPath(double x, double y, double width, double height, 
-                                                      double strokeWidth, double angle);
-   
-   /**
-    * @brief Clip a line to a rectangle
-    * @param x1 Line start X
-    * @param y1 Line start Y
-    * @param x2 Line end X
-    * @param y2 Line end Y
-    * @param rx Rectangle X
-    * @param ry Rectangle Y
-    * @param rw Rectangle width
-    * @param rh Rectangle height
-    * @return Clipped line segment or nullopt if no intersection
-    */
-   std::optional<std::array<double, 4>> clipLineToRect(double x1, double y1, double x2, double y2, 
-                                                      double rx, double ry, double rw, double rh);
-   
-   /**
-    * @brief Check if a line intersects a rectangle
-    * @param x1 Line start X
-    * @param y1 Line start Y
-    * @param x2 Line end X
-    * @param y2 Line end Y
-    * @param rx Rectangle X
-    * @param ry Rectangle Y
-    * @param rw Rectangle width
-    * @param rh Rectangle height
-    * @return True if the line intersects the rectangle
-    */
-   bool lineRectIntersect(double x1, double y1, double x2, double y2, 
-                         double rx, double ry, double rw, double rh);
-   
-   /**
-    * @brief Optimize paths for continuous zigzag pattern with minimal pen lifts
-    * @param allPaths Vector of paths to optimize
-    * @param strokeWidth Width of the stroke
-    * @param numThreads Number of threads to use for optimization
-    * @return Vector of optimized paths
-    */
-   std::vector<OptimizedPath> optimizePaths(const std::vector<std::vector<PathSegment>>& allPaths, 
-                                          double strokeWidth, int numThreads = 1);
-   
-   /**
-    * @brief Check if two line segments can be connected
-    * @param s1 First segment
-    * @param s2 Second segment
-    * @return True if the segments can be connected
-    */
-   bool canConnect(const PathSegment& s1, const PathSegment& s2);
-   
-   /**
-    * @brief Format a path for Inkscape using SVG path syntax
-    * @param segments Vector of path segments
-    * @param strokeWidth Width of the stroke
-    * @return SVG path element as string
-    */
-   std::string formatPathForInkscape(const std::vector<PathSegment>& segments, double strokeWidth);
-   
-   /**
-    * @brief Write optimized SVG content to output stream
-    * @param svg Output stream
-    * @param optimizedPaths Vector of optimized paths
-    * @param forInkscape Whether to optimize for Inkscape
-    * @param strokeColor Optional stroke color to use (defaults to black if empty)
-    */
-   void writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, 
-                         bool forInkscape, const std::string& strokeColor = "");
-   
-   /**
-    * @brief Extract unique colors from an image
-    * @param img The input image
-    * @return Vector of unique colors found
-    */
-   std::vector<ColorInfo> extractUniqueColors(const QImage& img);
-   
-   /**
-    * @brief Convert RGB color to SVG color string
-    * @param color The RGB color value
-    * @return SVG color string in hex format
-    */
-   QString rgbToSvgColor(QRgb color);
-   
-   /**
-    * @brief Write SVG with color layers
-    * @param svg Output stream
-    * @param colorPathsMap Map of color info to optimized paths
-    * @param forInkscape Whether to optimize for Inkscape
-    */
-   void writeColorLayersSvg(std::ofstream& svg, 
-                          const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
-                          bool forInkscape);
-   
-   /**
-    * @brief Reorder paths to minimize travel distance using nearest neighbor
-    * @param paths Vector of path segments to reorder
-    * @return Reordered vector of path segments
-    */
-   std::vector<std::vector<PathSegment>> reorderPathsForMinimalTravel(
-      const std::vector<std::vector<PathSegment>>& paths);
-   
-   /**
-    * @brief Calculate distance between two paths
-    * @param path1 First path
-    * @param path2 Second path
-    * @return Distance between end of path1 and start of path2
-    */
-   double calculatePathDistance(
-      const std::vector<PathSegment>& path1, 
-      const std::vector<PathSegment>& path2);
-   
-   /**
-    * @brief Simplify path using Douglas-Peucker algorithm
-    * @param path Original path segments
-    * @param tolerance Simplification tolerance
-    * @return Simplified path segments
-    */
-   std::vector<PathSegment> simplifyPath(
-      const std::vector<PathSegment>& path, double tolerance);
-   
-   /**
-    * @brief Convert path segments to point sequence for simplification
-    * @param segments Path segments to convert
-    * @return Vector of points (x,y pairs)
-    */
-   std::vector<std::pair<double, double>> segmentsToPoints(
-      const std::vector<PathSegment>& segments);
-   
-   /**
-    * @brief Convert point sequence back to path segments
-    * @param points Vector of points
-    * @return Path segments
-    */
-   std::vector<PathSegment> pointsToSegments(
-      const std::vector<std::pair<double, double>>& points);
-   
-   /**
-    * @brief Convert QRgb color to grayscale luminosity level
-    * @param color RGB color
-    * @return Luminosity value (0-255)
-    */
-   int rgbToLuminosity(QRgb color);
-   
-   /**
-    * @brief Sort colors by luminosity for optimal pen order
-    * @param colorMap Map of colors to paths
-    * @return Vector of colors sorted by luminosity (dark to light)
-    */
-   std::vector<ColorInfo> sortColorsByLuminosity(
-      const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorMap);
-   
-   /**
-    * @brief Group similar colors to reduce pen changes
-    * @param colorPaths Map of colors to paths
-    * @param threshold Similarity threshold
-    * @return Grouped color to paths map
-    */
-   std::map<ColorInfo, std::vector<std::vector<PathSegment>>> groupSimilarColors(
-      const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorPaths,
-      double threshold);
+
+   // Helper objects for different aspects of conversion
+   std::unique_ptr<PathOptimizer> m_pathOptimizer;
+   std::unique_ptr<SvgWriter> m_svgWriter;
+   std::unique_ptr<ColorHandler> m_colorHandler;
+   std::unique_ptr<GeometryUtils> m_geometryUtils;
 };
