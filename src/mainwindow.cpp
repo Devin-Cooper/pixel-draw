@@ -8,8 +8,11 @@
 #include <QButtonGroup>
 #include <QCloseEvent>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QSpinBox>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <iostream>
 
 /**
@@ -65,9 +68,76 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Add thread widget to the performance layout
     performanceLayout->addWidget(threadWidget);
     
-    // Add the performance group box to the vertical layout before the optimization group box
+    // Create enhanced optimization settings group
+    QGroupBox *enhancedOptimizationGroupBox = new QGroupBox("Enhanced Optimization", this);
+    QVBoxLayout *enhancedOptimizationLayout = new QVBoxLayout(enhancedOptimizationGroupBox);
+    
+    // Create minimize travel checkbox
+    minimizeTravelCheckbox = new QCheckBox("Minimize Travel Distance", this);
+    minimizeTravelCheckbox->setToolTip("Optimize the order of paths to minimize pen travel");
+    minimizeTravelCheckbox->setChecked(true);
+    enhancedOptimizationLayout->addWidget(minimizeTravelCheckbox);
+    
+    // Create path simplification controls
+    simplifyPathsCheckbox = new QCheckBox("Simplify Paths", this);
+    simplifyPathsCheckbox->setToolTip("Reduce the number of points in paths while preserving appearance");
+    simplifyPathsCheckbox->setChecked(true);
+    enhancedOptimizationLayout->addWidget(simplifyPathsCheckbox);
+    
+    QWidget *simplifyToleranceWidget = new QWidget(this);
+    QHBoxLayout *simplifyToleranceLayout = new QHBoxLayout(simplifyToleranceWidget);
+    simplifyToleranceLayout->setContentsMargins(20, 0, 0, 0);
+    
+    simplifyToleranceLabel = new QLabel("Simplification Tolerance:", simplifyToleranceWidget);
+    simplifyToleranceLayout->addWidget(simplifyToleranceLabel);
+    
+    simplifyToleranceInput = new QDoubleSpinBox(simplifyToleranceWidget);
+    simplifyToleranceInput->setMinimum(0.01);
+    simplifyToleranceInput->setMaximum(5.0);
+    simplifyToleranceInput->setSingleStep(0.05);
+    simplifyToleranceInput->setValue(0.1);
+    simplifyToleranceInput->setToolTip("Lower values preserve more detail, higher values reduce file size");
+    simplifyToleranceLayout->addWidget(simplifyToleranceInput);
+    
+    enhancedOptimizationLayout->addWidget(simplifyToleranceWidget);
+    
+    // Color optimization controls (initially hidden, shown when color mode is selected)
+    QGroupBox *colorOptimizationGroupBox = new QGroupBox("Color Optimization", this);
+    QVBoxLayout *colorOptimizationLayout = new QVBoxLayout(colorOptimizationGroupBox);
+    
+    optimizeColorOrderCheckbox = new QCheckBox("Optimize Color Order", this);
+    optimizeColorOrderCheckbox->setToolTip("Order colors from dark to light for optimal plotting");
+    optimizeColorOrderCheckbox->setChecked(true);
+    colorOptimizationLayout->addWidget(optimizeColorOrderCheckbox);
+    
+    groupSimilarColorsCheckbox = new QCheckBox("Group Similar Colors", this);
+    groupSimilarColorsCheckbox->setToolTip("Group similar colors to reduce pen changes");
+    groupSimilarColorsCheckbox->setChecked(false);
+    colorOptimizationLayout->addWidget(groupSimilarColorsCheckbox);
+    
+    QWidget *colorSimilarityWidget = new QWidget(this);
+    QHBoxLayout *colorSimilarityLayout = new QHBoxLayout(colorSimilarityWidget);
+    colorSimilarityLayout->setContentsMargins(20, 0, 0, 0);
+    
+    colorSimilarityLabel = new QLabel("Color Similarity Threshold:", colorSimilarityWidget);
+    colorSimilarityLayout->addWidget(colorSimilarityLabel);
+    
+    colorSimilarityInput = new QDoubleSpinBox(colorSimilarityWidget);
+    colorSimilarityInput->setMinimum(1.0);
+    colorSimilarityInput->setMaximum(100.0);
+    colorSimilarityInput->setSingleStep(1.0);
+    colorSimilarityInput->setValue(20.0);
+    colorSimilarityInput->setToolTip("Higher values group more colors together (1-100)");
+    colorSimilarityLayout->addWidget(colorSimilarityInput);
+    
+    colorOptimizationLayout->addWidget(colorSimilarityWidget);
+    colorSimilarityWidget->setVisible(false); // Initially hidden until "Group Similar Colors" is checked
+    
+    // Add the groups to the main layout
     ui->verticalLayout->insertWidget(ui->verticalLayout->indexOf(ui->optimizationGroupBox), performanceGroupBox);
-
+    ui->verticalLayout->insertWidget(ui->verticalLayout->indexOf(ui->optimizationGroupBox), enhancedOptimizationGroupBox);
+    ui->verticalLayout->insertWidget(ui->verticalLayout->indexOf(ui->optimizationGroupBox), colorOptimizationGroupBox);
+    
     // Log available thread count to help with debugging
     std::cout << "System has " << std::thread::hardware_concurrency() << " hardware threads available." << std::endl;
     std::cout << "Default thread count set to: 0 (Auto)" << std::endl;
@@ -99,6 +169,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Connect radio button groups to update UI visibility
     connect(sizeTypeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::updateSizeInputs);
     connect(fillTypeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::updateAngleInput);
+    connect(colorModeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::updateColorModeOptions);
+    
+    // Connect checkboxes to update dependent controls
+    connect(simplifyPathsCheckbox, &QCheckBox::stateChanged, this, &MainWindow::updatePathSimplificationOptions);
+    connect(groupSimilarColorsCheckbox, &QCheckBox::stateChanged, this, &MainWindow::updateSimilarColorOptions);
     
     // Connect all input widgets to save settings whenever they change
     // For double spin boxes
@@ -114,9 +189,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             this, &MainWindow::saveSettings);
     connect(ui->marginInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
             this, &MainWindow::saveSettings);
+    connect(simplifyToleranceInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
+            this, &MainWindow::saveSettings);
+    connect(colorSimilarityInput, QOverload<double>::of(&QDoubleSpinBox::valueChanged), 
+            this, &MainWindow::saveSettings);
     
     // For checkboxes
     connect(ui->optimizeCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);    
+    connect(minimizeTravelCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
+    connect(simplifyPathsCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
+    connect(optimizeColorOrderCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
+    connect(groupSimilarColorsCheckbox, &QCheckBox::stateChanged, this, &MainWindow::saveSettings);
+    
     // For radio button groups
     connect(sizeTypeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::saveSettings);
     connect(unitsGroup, &QButtonGroup::buttonClicked, this, &MainWindow::saveSettings);
@@ -135,6 +219,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Update UI visibility based on loaded settings
     updateSizeInputs();
     updateAngleInput();
+    updateColorModeOptions();
+    updatePathSimplificationOptions();
+    updateSimilarColorOptions();
+    
+    // Adjust window size to fit all the new controls
+    resize(width(), sizeHint().height());
 }
 
 /**
@@ -186,6 +276,14 @@ void MainWindow::convert() {
         params.numThreads = threadCountSpinBox->value();
         params.margin = ui->marginInput->value(); // Set margin from UI
         
+        // Set enhanced optimization parameters
+        params.minimizeTravel = minimizeTravelCheckbox->isChecked();
+        params.simplifyPaths = simplifyPathsCheckbox->isChecked();
+        params.simplifyTolerance = simplifyToleranceInput->value();
+        params.optimizeColorOrder = optimizeColorOrderCheckbox->isChecked();
+        params.groupSimilarColors = groupSimilarColorsCheckbox->isChecked();
+        params.colorSimilarityThreshold = colorSimilarityInput->value();
+        
         std::cout << "\n***** Starting conversion with parameters *****" << std::endl;
         std::cout << "Thread count: " << params.numThreads 
                   << (params.numThreads == 0 ? " (Auto)" : "") << std::endl;
@@ -194,13 +292,25 @@ void MainWindow::convert() {
         std::cout << "Margin: " << params.margin << " " 
                   << (params.units == Units::MM ? "mm" : "inches") << std::endl;
         std::cout << "Optimize: " << (params.optimize ? "Yes" : "No") << std::endl;
-        std::cout << "Optimize for Inkscape: " << (params.optimizeForInkscape ? "Yes" : "No") << std::endl;
+        std::cout << "Minimize travel: " << (params.minimizeTravel ? "Yes" : "No") << std::endl;
+        std::cout << "Simplify paths: " << (params.simplifyPaths ? "Yes" : "No") << std::endl;
+        if (params.simplifyPaths) {
+            std::cout << "Simplification tolerance: " << params.simplifyTolerance << std::endl;
+        }
         
         // Set color mode
         params.colorMode = colorModeGroup->checkedButton()->text() == "Preserve Colors" ? 
                          ColorMode::PreserveColors : ColorMode::Monochrome;
         std::cout << "Color mode: " << (params.colorMode == ColorMode::PreserveColors ? 
                                       "Preserve Colors" : "Monochrome") << std::endl;
+                                      
+        if (params.colorMode == ColorMode::PreserveColors) {
+            std::cout << "Optimize color order: " << (params.optimizeColorOrder ? "Yes" : "No") << std::endl;
+            std::cout << "Group similar colors: " << (params.groupSimilarColors ? "Yes" : "No") << std::endl;
+            if (params.groupSimilarColors) {
+                std::cout << "Color similarity threshold: " << params.colorSimilarityThreshold << std::endl;
+            }
+        }
 
         // Set either pixel size or document size based on selection
         if (sizeTypeGroup->checkedButton()->text() == "Pixel Size") {
@@ -269,6 +379,35 @@ void MainWindow::updateAngleInput() {
 }
 
 /**
+ * @brief Updates visibility of color optimization options based on color mode
+ */
+void MainWindow::updateColorModeOptions() {
+    QAbstractButton* button = colorModeGroup->checkedButton();
+    if (button) {
+        bool isColorMode = button->text() == "Preserve Colors";
+        optimizeColorOrderCheckbox->parentWidget()->setVisible(isColorMode);
+        updateSimilarColorOptions(); // Update visibility of color similarity controls
+    }
+}
+
+/**
+ * @brief Updates visibility of path simplification options
+ */
+void MainWindow::updatePathSimplificationOptions() {
+    bool simplifyEnabled = simplifyPathsCheckbox->isChecked();
+    simplifyToleranceLabel->parentWidget()->setVisible(simplifyEnabled);
+}
+
+/**
+ * @brief Updates visibility of similar color grouping options
+ */
+void MainWindow::updateSimilarColorOptions() {
+    bool colorMode = colorModeGroup->checkedButton()->text() == "Preserve Colors";
+    bool groupEnabled = groupSimilarColorsCheckbox->isChecked();
+    colorSimilarityLabel->parentWidget()->setVisible(colorMode && groupEnabled);
+}
+
+/**
  * @brief Saves current UI settings to persistent storage
  * 
  * This is called automatically whenever UI elements are changed
@@ -286,10 +425,16 @@ void MainWindow::saveSettings() {
     settings.setValue("angle", ui->angleInput->value());
     settings.setValue("docWidth", ui->docWidthInput->value());
     settings.setValue("docHeight", ui->docHeightInput->value());
-    settings.setValue("margin", ui->marginInput->value()); // Save margin setting
+    settings.setValue("margin", ui->marginInput->value()); 
+    settings.setValue("simplifyTolerance", simplifyToleranceInput->value());
+    settings.setValue("colorSimilarity", colorSimilarityInput->value());
     
     // Save checkbox states
     settings.setValue("optimize", ui->optimizeCheckbox->isChecked());
+    settings.setValue("minimizeTravel", minimizeTravelCheckbox->isChecked());
+    settings.setValue("simplifyPaths", simplifyPathsCheckbox->isChecked());
+    settings.setValue("optimizeColorOrder", optimizeColorOrderCheckbox->isChecked());
+    settings.setValue("groupSimilarColors", groupSimilarColorsCheckbox->isChecked());
     
     // Save thread count
     settings.setValue("threadCount", threadCountSpinBox->value());
@@ -317,10 +462,16 @@ void MainWindow::loadSettings() {
     ui->angleInput->setValue(settings.value("angle", 45.0).toDouble());
     ui->docWidthInput->setValue(settings.value("docWidth", 100.0).toDouble());
     ui->docHeightInput->setValue(settings.value("docHeight", 100.0).toDouble());
-    ui->marginInput->setValue(settings.value("margin", 0.0).toDouble()); // Load margin setting
+    ui->marginInput->setValue(settings.value("margin", 0.0).toDouble());
+    simplifyToleranceInput->setValue(settings.value("simplifyTolerance", 0.1).toDouble());
+    colorSimilarityInput->setValue(settings.value("colorSimilarity", 20.0).toDouble());
     
     // Then load checkbox states
     ui->optimizeCheckbox->setChecked(settings.value("optimize", true).toBool());
+    minimizeTravelCheckbox->setChecked(settings.value("minimizeTravel", true).toBool());
+    simplifyPathsCheckbox->setChecked(settings.value("simplifyPaths", true).toBool());
+    optimizeColorOrderCheckbox->setChecked(settings.value("optimizeColorOrder", true).toBool());
+    groupSimilarColorsCheckbox->setChecked(settings.value("groupSimilarColors", false).toBool());
     
     // Load thread count
     int threadCount = settings.value("threadCount", 0).toInt();

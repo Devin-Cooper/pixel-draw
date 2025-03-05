@@ -13,7 +13,7 @@
 
 enum class Units { MM, Inches };
 enum class FillType { Solid, Zigzag };
-enum class ColorMode { Monochrome, PreserveColors }; // New enum for color handling
+enum class ColorMode { Monochrome, PreserveColors }; 
 
 /**
  * @brief Parameters for the bitmap to SVG conversion
@@ -31,6 +31,14 @@ struct ConverterParams {
    bool optimize;            ///< Whether to optimize path connections
    bool optimizeForInkscape; ///< Whether to optimize output for Inkscape
    int numThreads;           ///< Number of threads to use (0 = auto)
+   
+   // New plotter-specific options
+   bool optimizeColorOrder;     ///< Order colors by luminosity (dark to light)
+   bool groupSimilarColors;     ///< Group similar colors to reduce pen changes
+   double colorSimilarityThreshold; ///< Threshold for grouping similar colors (0-255)
+   bool simplifyPaths;          ///< Whether to simplify paths to reduce file size
+   double simplifyTolerance;    ///< Tolerance for path simplification (0-1)
+   bool minimizeTravel;         ///< Whether to optimize path order to minimize travel
 };
 
 /**
@@ -257,4 +265,72 @@ private:
    void writeColorLayersSvg(std::ofstream& svg, 
                           const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
                           bool forInkscape);
+   
+   /**
+    * @brief Reorder paths to minimize travel distance using nearest neighbor
+    * @param paths Vector of path segments to reorder
+    * @return Reordered vector of path segments
+    */
+   std::vector<std::vector<PathSegment>> reorderPathsForMinimalTravel(
+      const std::vector<std::vector<PathSegment>>& paths);
+   
+   /**
+    * @brief Calculate distance between two paths
+    * @param path1 First path
+    * @param path2 Second path
+    * @return Distance between end of path1 and start of path2
+    */
+   double calculatePathDistance(
+      const std::vector<PathSegment>& path1, 
+      const std::vector<PathSegment>& path2);
+   
+   /**
+    * @brief Simplify path using Douglas-Peucker algorithm
+    * @param path Original path segments
+    * @param tolerance Simplification tolerance
+    * @return Simplified path segments
+    */
+   std::vector<PathSegment> simplifyPath(
+      const std::vector<PathSegment>& path, double tolerance);
+   
+   /**
+    * @brief Convert path segments to point sequence for simplification
+    * @param segments Path segments to convert
+    * @return Vector of points (x,y pairs)
+    */
+   std::vector<std::pair<double, double>> segmentsToPoints(
+      const std::vector<PathSegment>& segments);
+   
+   /**
+    * @brief Convert point sequence back to path segments
+    * @param points Vector of points
+    * @return Path segments
+    */
+   std::vector<PathSegment> pointsToSegments(
+      const std::vector<std::pair<double, double>>& points);
+   
+   /**
+    * @brief Convert QRgb color to grayscale luminosity level
+    * @param color RGB color
+    * @return Luminosity value (0-255)
+    */
+   int rgbToLuminosity(QRgb color);
+   
+   /**
+    * @brief Sort colors by luminosity for optimal pen order
+    * @param colorMap Map of colors to paths
+    * @return Vector of colors sorted by luminosity (dark to light)
+    */
+   std::vector<ColorInfo> sortColorsByLuminosity(
+      const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorMap);
+   
+   /**
+    * @brief Group similar colors to reduce pen changes
+    * @param colorPaths Map of colors to paths
+    * @param threshold Similarity threshold
+    * @return Grouped color to paths map
+    */
+   std::map<ColorInfo, std::vector<std::vector<PathSegment>>> groupSimilarColors(
+      const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorPaths,
+      double threshold);
 };

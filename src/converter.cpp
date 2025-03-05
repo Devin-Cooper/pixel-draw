@@ -9,6 +9,9 @@
 #include <QElapsedTimer>
 #include <iostream>
 #include <future>
+#include <algorithm>
+#include <functional>
+#include <limits>
 
 // Unit conversions
 double BitmapConverter::mmToInches(double mm) { return mm / 25.4; }
@@ -121,7 +124,7 @@ bool BitmapConverter::canConnect(const PathSegment& s1, const PathSegment& s2) {
           (std::abs(s1.x1 - s2.x2) < EPSILON && std::abs(s1.y1 - s2.y2) < EPSILON);
 }
 
-// NEW FUNCTION: Optimize a chunk of paths for multi-threaded optimization
+// Optimize a chunk of paths for multi-threaded optimization
 std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
     const std::vector<std::vector<PathSegment>>& chunkPaths, double strokeWidth,
     int chunkIndex, int totalChunks) {
@@ -182,16 +185,13 @@ std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
         optimizedChunk.push_back(currentPath);
     }
     
-    // Special optimization for zigzag fills
+    // Special optimization for zigzag fills with enhanced bidirectional handling
     for (size_t i = 0; i < zigzags.size(); i++) {
         const auto& zigzagLines = zigzags[i];
         if (zigzagLines.empty()) continue;
         
         OptimizedPath zigzagPath;
         zigzagPath.strokeWidth = strokeWidth;
-        
-        // For a continuous zigzag, we need to intelligently order the lines
-        // and create connecting segments between them
         
         // Group zigzag lines by their angle (for multiangle cases)
         std::map<double, std::vector<PathSegment>> linesByAngle;
@@ -207,7 +207,7 @@ std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
             linesByAngle[roundedAngle].push_back(line);
         }
         
-        // Process each angle group
+        // Process each angle group with enhanced bidirectional optimization
         for (auto& [angle, lines] : linesByAngle) {
             // Determine the primary axis for sorting based on line angle
             bool sortByY = std::abs(std::cos(angle)) < std::abs(std::sin(angle));
@@ -223,46 +223,76 @@ std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
                 });
             }
             
-            // Create a continuous zigzag path with connecting segments
+            // Create a continuous zigzag path with optimized bidirectional traversal
             std::vector<PathSegment> continuousPath;
-            bool forward = true;
             
+            // Enhanced zigzag with bidirectional traversal that minimizes travel distance
             for (size_t j = 0; j < lines.size(); j++) {
                 PathSegment currentLine = lines[j];
-                
-                // If going backward, reverse the line direction
-                if (!forward) {
-                    std::swap(currentLine.x1, currentLine.x2);
-                    std::swap(currentLine.y1, currentLine.y2);
-                }
                 
                 // Add the current line to the path
                 continuousPath.push_back(currentLine);
                 
-                // If not the last line, add a connector to the next line
+                // If not the last line, add optimized connector to the next line
                 if (j < lines.size() - 1) {
                     PathSegment nextLine = lines[j + 1];
                     
-                    // Create connecting segment
-                    PathSegment connector;
-                    connector.x1 = currentLine.x2;
-                    connector.y1 = currentLine.y2;
+                    // Determine which connection (start-to-start, start-to-end, etc) is shortest
+                    double dist1 = std::pow(currentLine.x2 - nextLine.x1, 2) + std::pow(currentLine.y2 - nextLine.y1, 2); // end-to-start
+                    double dist2 = std::pow(currentLine.x2 - nextLine.x2, 2) + std::pow(currentLine.y2 - nextLine.y2, 2); // end-to-end
+                    double dist3 = std::pow(currentLine.x1 - nextLine.x1, 2) + std::pow(currentLine.y1 - nextLine.y1, 2); // start-to-start
+                    double dist4 = std::pow(currentLine.x1 - nextLine.x2, 2) + std::pow(currentLine.y1 - nextLine.y2, 2); // start-to-end
                     
-                    // Determine which end of the next line to connect to
-                    if (forward) {
-                        // Going from current end to next start
+                    // Find minimum distance connection
+                    double minDist = std::min({dist1, dist2, dist3, dist4});
+                    
+                    PathSegment connector;
+                    // Adjust line directions and create connector based on minimum distance
+                    if (minDist == dist1) {
+                        // Current end to next start (default case)
+                        connector.x1 = currentLine.x2;
+                        connector.y1 = currentLine.y2;
                         connector.x2 = nextLine.x1;
                         connector.y2 = nextLine.y1;
-                    } else {
-                        // Going from current end to next end (since we'll traverse next line backward)
+                        // Next line direction stays as is
+                    } else if (minDist == dist2) {
+                        // Current end to next end
+                        connector.x1 = currentLine.x2;
+                        connector.y1 = currentLine.y2;
                         connector.x2 = nextLine.x2;
                         connector.y2 = nextLine.y2;
+                        // Reverse next line direction
+                        std::swap(nextLine.x1, nextLine.x2);
+                        std::swap(nextLine.y1, nextLine.y2);
+                        lines[j+1] = nextLine; // Update for future iterations
+                    } else if (minDist == dist3) {
+                        // Current start to next start (need to reverse current line first)
+                        std::swap(currentLine.x1, currentLine.x2);
+                        std::swap(currentLine.y1, currentLine.y2);
+                        continuousPath.back() = currentLine; // Update the last added line
+                        
+                        connector.x1 = currentLine.x2; // Now this is the original start
+                        connector.y1 = currentLine.y2;
+                        connector.x2 = nextLine.x1;
+                        connector.y2 = nextLine.y1;
+                    } else { // dist4 is minimum
+                        // Current start to next end (need to reverse both lines)
+                        std::swap(currentLine.x1, currentLine.x2);
+                        std::swap(currentLine.y1, currentLine.y2);
+                        continuousPath.back() = currentLine; // Update the last added line
+                        
+                        connector.x1 = currentLine.x2; // Now this is the original start
+                        connector.y1 = currentLine.y2;
+                        connector.x2 = nextLine.x2;
+                        connector.y2 = nextLine.y2;
+                        
+                        // Reverse next line direction
+                        std::swap(nextLine.x1, nextLine.x2);
+                        std::swap(nextLine.y1, nextLine.y2);
+                        lines[j+1] = nextLine; // Update for future iterations
                     }
                     
                     continuousPath.push_back(connector);
-                    
-                    // Flip direction for next line (bidirectional zigzag)
-                    forward = !forward;
                 }
             }
             
@@ -284,7 +314,7 @@ std::vector<OptimizedPath> BitmapConverter::optimizePathChunk(
     return optimizedChunk;
 }
 
-// NEW FUNCTION: Optimize paths for a single color (for multi-threaded color optimization)
+// Optimize paths for a single color (for multi-threaded color optimization)
 std::vector<OptimizedPath> BitmapConverter::optimizeColorPaths(
     const std::vector<std::vector<PathSegment>>& colorPaths, double strokeWidth,
     const QString& colorName) {
@@ -303,13 +333,222 @@ std::vector<OptimizedPath> BitmapConverter::optimizeColorPaths(
     return result;
 }
 
-// Original optimizePaths function is now a wrapper that distributes work to multiple threads
+// Path reordering to minimize travel distance (new function)
+std::vector<std::vector<PathSegment>> BitmapConverter::reorderPathsForMinimalTravel(
+    const std::vector<std::vector<PathSegment>>& paths) {
+    
+    if (paths.size() <= 1) return paths;
+    
+    std::vector<std::vector<PathSegment>> result;
+    std::vector<bool> used(paths.size(), false);
+    
+    // Start with the first path
+    result.push_back(paths[0]);
+    used[0] = true;
+    
+    // Nearest neighbor algorithm to find next closest path
+    while (result.size() < paths.size()) {
+        const auto& lastPath = result.back();
+        double minDistance = std::numeric_limits<double>::max();
+        int bestIndex = -1;
+        
+        // Find the closest unused path
+        for (size_t i = 0; i < paths.size(); i++) {
+            if (!used[i]) {
+                double distance = calculatePathDistance(lastPath, paths[i]);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    bestIndex = i;
+                }
+            }
+        }
+        
+        if (bestIndex >= 0) {
+            result.push_back(paths[bestIndex]);
+            used[bestIndex] = true;
+        }
+    }
+    
+    return result;
+}
+
+double BitmapConverter::calculatePathDistance(
+    const std::vector<PathSegment>& path1, 
+    const std::vector<PathSegment>& path2) {
+    
+    if (path1.empty() || path2.empty()) return std::numeric_limits<double>::max();
+    
+    // Get the endpoint of the first path
+    const auto& lastSegment = path1.back();
+    double endX = lastSegment.x2;
+    double endY = lastSegment.y2;
+    
+    // Get the start point of the second path
+    const auto& firstSegment = path2.front();
+    double startX = firstSegment.x1;
+    double startY = firstSegment.y1;
+    
+    // Calculate Euclidean distance
+    return std::sqrt(std::pow(endX - startX, 2) + std::pow(endY - startY, 2));
+}
+
+// Path simplification functions (new)
+std::vector<PathSegment> BitmapConverter::simplifyPath(
+    const std::vector<PathSegment>& path, double tolerance) {
+    
+    // For very short paths, no simplification needed
+    if (path.size() <= 2) return path;
+    
+    // Convert segments to points for simplification
+    auto points = segmentsToPoints(path);
+    
+    // Implementation of Douglas-Peucker algorithm
+    std::vector<bool> keepPoint(points.size(), false);
+    
+    // Always keep first and last points
+    keepPoint[0] = true;
+    keepPoint[points.size() - 1] = true;
+    
+    // Recursive function to mark points to keep
+    std::function<void(int, int)> simplifySegment = [&](int start, int end) {
+        if (end - start <= 1) return;
+        
+        double maxDistance = 0;
+        int maxIndex = start;
+        
+        // Line from start to end
+        double lineX1 = points[start].first;
+        double lineY1 = points[start].second;
+        double lineX2 = points[end].first;
+        double lineY2 = points[end].second;
+        
+        // Calculate line length
+        double lineLength = std::sqrt(std::pow(lineX2 - lineX1, 2) + std::pow(lineY2 - lineY1, 2));
+        
+        // Find point with maximum distance from line
+        for (int i = start + 1; i < end; i++) {
+            double px = points[i].first;
+            double py = points[i].second;
+            
+            // Calculate perpendicular distance
+            double distance = 0;
+            if (lineLength > 0) {
+                distance = std::abs((lineY2 - lineY1) * px - (lineX2 - lineX1) * py + 
+                                  lineX2 * lineY1 - lineY2 * lineX1) / lineLength;
+            }
+            
+            if (distance > maxDistance) {
+                maxDistance = distance;
+                maxIndex = i;
+            }
+        }
+        
+        // If max distance is greater than tolerance, keep this point and recurse
+        if (maxDistance > tolerance) {
+            keepPoint[maxIndex] = true;
+            simplifySegment(start, maxIndex);
+            simplifySegment(maxIndex, end);
+        }
+    };
+    
+    // Start simplification
+    simplifySegment(0, points.size() - 1);
+    
+    // Build new path with only kept points
+    std::vector<std::pair<double, double>> simplifiedPoints;
+    for (size_t i = 0; i < points.size(); i++) {
+        if (keepPoint[i]) {
+            simplifiedPoints.push_back(points[i]);
+        }
+    }
+    
+    // Convert back to segments
+    return pointsToSegments(simplifiedPoints);
+}
+
+std::vector<std::pair<double, double>> BitmapConverter::segmentsToPoints(
+    const std::vector<PathSegment>& segments) {
+    
+    std::vector<std::pair<double, double>> points;
+    
+    if (segments.empty()) return points;
+    
+    // Add first point
+    points.push_back(std::make_pair(segments[0].x1, segments[0].y1));
+    
+    // Add each endpoint
+    for (const auto& segment : segments) {
+        points.push_back(std::make_pair(segment.x2, segment.y2));
+    }
+    
+    return points;
+}
+
+std::vector<PathSegment> BitmapConverter::pointsToSegments(
+    const std::vector<std::pair<double, double>>& points) {
+    
+    std::vector<PathSegment> segments;
+    
+    if (points.size() < 2) return segments;
+    
+    // Create segments between consecutive points
+    for (size_t i = 0; i < points.size() - 1; i++) {
+        PathSegment segment = {
+            points[i].first, points[i].second,
+            points[i+1].first, points[i+1].second
+        };
+        segments.push_back(segment);
+    }
+    
+    return segments;
+}
+
+// Optimized optimizePaths function with travel minimization
 std::vector<OptimizedPath> BitmapConverter::optimizePaths(
    const std::vector<std::vector<PathSegment>>& allPaths, double strokeWidth, int numThreads) {
     
     if (numThreads <= 1 || allPaths.size() < 100) {
         // For small path counts or single-threading, use the direct approach
-        return optimizePathChunk(allPaths, strokeWidth, 0, 1);
+        auto result = optimizePathChunk(allPaths, strokeWidth, 0, 1);
+        
+        // Apply path reordering if requested
+        std::vector<OptimizedPath> reorderedResult;
+        
+        // Separate outlines and fill paths
+        std::vector<OptimizedPath> outlinePaths;
+        std::vector<OptimizedPath> fillPaths;
+        
+        for (const auto& path : result) {
+            if (path.segments.size() == 4) {
+                outlinePaths.push_back(path);
+            } else {
+                fillPaths.push_back(path);
+            }
+        }
+        
+        // Reorder outline paths for minimal travel
+        if (outlinePaths.size() > 1) {
+            std::vector<std::vector<PathSegment>> segments;
+            for (const auto& path : outlinePaths) {
+                segments.push_back(path.segments);
+            }
+            
+            auto reorderedSegments = reorderPathsForMinimalTravel(segments);
+            outlinePaths.clear();
+            
+            for (const auto& seg : reorderedSegments) {
+                OptimizedPath path;
+                path.segments = seg;
+                path.strokeWidth = strokeWidth;
+                outlinePaths.push_back(path);
+            }
+        }
+        
+        // Combine the reordered paths - keep outlines first, then fills
+        reorderedResult.insert(reorderedResult.end(), outlinePaths.begin(), outlinePaths.end());
+        reorderedResult.insert(reorderedResult.end(), fillPaths.begin(), fillPaths.end());
+        
+        return reorderedResult;
     }
     
     // Divide paths into chunks for parallel processing
@@ -348,7 +587,54 @@ std::vector<OptimizedPath> BitmapConverter::optimizePaths(
         result.insert(result.end(), chunkResult.begin(), chunkResult.end());
     }
     
-    return result;
+    // Apply path simplification to zigzag fills only if requested
+    for (auto& path : result) {
+        // Only simplify paths with more than 4 segments (zigzag fills)
+        if (path.segments.size() > 4) {
+            // Use a tolerance that is a fraction of the stroke width
+            double tolerance = strokeWidth * 0.1;
+            path.segments = simplifyPath(path.segments, tolerance);
+        }
+    }
+    
+    // Apply path reordering for minimal travel
+    std::vector<OptimizedPath> reorderedResult;
+        
+    // Separate outlines and fill paths
+    std::vector<OptimizedPath> outlinePaths;
+    std::vector<OptimizedPath> fillPaths;
+    
+    for (const auto& path : result) {
+        if (path.segments.size() == 4) {
+            outlinePaths.push_back(path);
+        } else {
+            fillPaths.push_back(path);
+        }
+    }
+    
+    // Reorder outline paths for minimal travel
+    if (outlinePaths.size() > 1) {
+        std::vector<std::vector<PathSegment>> segments;
+        for (const auto& path : outlinePaths) {
+            segments.push_back(path.segments);
+        }
+        
+        auto reorderedSegments = reorderPathsForMinimalTravel(segments);
+        outlinePaths.clear();
+        
+        for (const auto& seg : reorderedSegments) {
+            OptimizedPath path;
+            path.segments = seg;
+            path.strokeWidth = strokeWidth;
+            outlinePaths.push_back(path);
+        }
+    }
+    
+    // Combine the reordered paths - keep outlines first, then fills
+    reorderedResult.insert(reorderedResult.end(), outlinePaths.begin(), outlinePaths.end());
+    reorderedResult.insert(reorderedResult.end(), fillPaths.begin(), fillPaths.end());
+    
+    return reorderedResult;
 }
 
 // Clip line to rectangle using Liang-Barsky algorithm
@@ -432,20 +718,21 @@ std::string BitmapConverter::formatPathForInkscape(const std::vector<PathSegment
         ss << " L " << seg.x2 << "," << seg.y2;
     }
     
-    // Close the path attributes - use black as a default that will be replaced
-    ss << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\" />";
+    // Close the path attributes with vector-effect for non-scaling strokes
+    ss << "\" fill=\"none\" stroke=\"black\" stroke-width=\"" << strokeWidth 
+       << "\" style=\"vector-effect:non-scaling-stroke\" />";
     
     return ss.str();
 }
 
-// Write SVG with optimizations for Inkscape (always used now)
+// Write SVG with optimizations for Inkscape
 void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<OptimizedPath>& optimizedPaths, 
                                       bool /* forInkscape - no longer used */, const std::string& strokeColor) {
     // Use the specified stroke color, or default to black if not provided
     std::string color = !strokeColor.empty() ? strokeColor : "black";
     
     // Group outlines
-    svg << "  <g id=\"outlines\">\n";
+    svg << "  <g id=\"outlines\" inkscape:groupmode=\"layer\" inkscape:label=\"Outlines\">\n";
     for (const auto& path : optimizedPaths) {
         bool isOutline = path.segments.size() == 4;
         if (isOutline) {
@@ -466,7 +753,7 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
     }
     
     if (hasZigzags) {
-        svg << "  <g id=\"fills\">\n";
+        svg << "  <g id=\"fills\" inkscape:groupmode=\"layer\" inkscape:label=\"Fills\">\n";
         for (const auto& path : optimizedPaths) {
             if (path.segments.size() > 4) {
                 // Check if this is a continuous zigzag path (segments with shared endpoints)
@@ -487,20 +774,108 @@ void BitmapConverter::writeOptimizedSvg(std::ofstream& svg, const std::vector<Op
                         svg << " " << segment.x2 << "," << segment.y2;
                     }
                     svg << "\" fill=\"none\" stroke=\"" << color 
-                        << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                        << "\" stroke-width=\"" << path.strokeWidth
+                        << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                 } else {
                     // For non-continuous zigzag, use a polyline for each segment
                     for (const auto& segment : path.segments) {
                         svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                             << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
                             << "\" stroke=\"" << color 
-                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                            << "\" stroke-width=\"" << path.strokeWidth
+                            << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                     }
                 }
             }
         }
         svg << "  </g>\n";
     }
+}
+
+// Color handling functions (new)
+int BitmapConverter::rgbToLuminosity(QRgb color) {
+    // Calculate luminosity using standard formula (perceived brightness)
+    // Y = 0.299*R + 0.587*G + 0.114*B
+    return static_cast<int>(0.299 * qRed(color) + 0.587 * qGreen(color) + 0.114 * qBlue(color));
+}
+
+std::vector<ColorInfo> BitmapConverter::sortColorsByLuminosity(
+    const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorMap) {
+    
+    std::vector<ColorInfo> sortedColors;
+    
+    // Extract colors from map
+    for (const auto& pair : colorMap) {
+        sortedColors.push_back(pair.first);
+    }
+    
+    // Sort colors from dark to light (darkest drawn first)
+    std::sort(sortedColors.begin(), sortedColors.end(), 
+              [this](const ColorInfo& a, const ColorInfo& b) {
+        return rgbToLuminosity(a.color) < rgbToLuminosity(b.color);
+    });
+    
+    return sortedColors;
+}
+
+// Group similar colors to reduce pen changes
+std::map<ColorInfo, std::vector<std::vector<PathSegment>>> BitmapConverter::groupSimilarColors(
+    const std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& colorPaths,
+    double threshold) {
+    
+    if (colorPaths.size() <= 1 || threshold <= 0) {
+        return colorPaths;
+    }
+    
+    // Create a copy of the input map for grouping
+    std::map<ColorInfo, std::vector<std::vector<PathSegment>>> result;
+    
+    // Convert map to vector for easier manipulation
+    std::vector<std::pair<ColorInfo, std::vector<std::vector<PathSegment>>>> colorVec(
+        colorPaths.begin(), colorPaths.end());
+    
+    // Sort colors by luminosity for more predictable grouping
+    std::sort(colorVec.begin(), colorVec.end(), 
+              [this](const auto& a, const auto& b) {
+        return rgbToLuminosity(a.first.color) < rgbToLuminosity(b.first.color);
+    });
+    
+    // Track which colors have been grouped
+    std::vector<bool> processed(colorVec.size(), false);
+    
+    // Process each color
+    for (size_t i = 0; i < colorVec.size(); i++) {
+        if (processed[i]) continue;
+        
+        // This color becomes a representative for a group
+        ColorInfo groupColor = colorVec[i].first;
+        auto& groupPaths = result[groupColor];
+        groupPaths = colorVec[i].second;
+        processed[i] = true;
+        
+        // Check other colors to see if they should be grouped with this one
+        for (size_t j = i + 1; j < colorVec.size(); j++) {
+            if (processed[j]) continue;
+            
+            // Calculate color distance using Euclidean distance in RGB space
+            int rDiff = qRed(groupColor.color) - qRed(colorVec[j].first.color);
+            int gDiff = qGreen(groupColor.color) - qGreen(colorVec[j].first.color);
+            int bDiff = qBlue(groupColor.color) - qBlue(colorVec[j].first.color);
+            
+            double distance = std::sqrt(rDiff*rDiff + gDiff*gDiff + bDiff*bDiff);
+            
+            // If colors are similar enough, group them
+            if (distance <= threshold) {
+                // Add paths to the group
+                groupPaths.insert(groupPaths.end(), 
+                                 colorVec[j].second.begin(), 
+                                 colorVec[j].second.end());
+                processed[j] = true;
+            }
+        }
+    }
+    
+    return result;
 }
 
 // Convert RGB color to SVG color string - Updated for transparency
@@ -522,19 +897,34 @@ QString BitmapConverter::rgbToSvgColor(QRgb color) {
     }
 }
 
-// Write SVG with color layers - Updated for proper color handling
+// Write SVG with color layers - Enhanced for better Inkscape compatibility
 void BitmapConverter::writeColorLayersSvg(std::ofstream& svg, 
                                        const std::map<ColorInfo, std::vector<OptimizedPath>>& colorPathsMap,
                                        bool /* forInkscape - no longer used */) {
     std::cout << "Writing SVG with " << colorPathsMap.size() << " color layers..." << std::endl;
     
-    // Write each color as a separate layer
+    // Create a vector of colors for ordering
+    std::vector<ColorInfo> colorOrder;
     for (const auto& pair : colorPathsMap) {
-        const ColorInfo& colorInfo = pair.first;
-        const std::vector<OptimizedPath>& paths = pair.second;
+        colorOrder.push_back(pair.first);
+    }
+    
+    // Sort colors by luminosity (darkest to lightest) for optimal plotting
+    std::sort(colorOrder.begin(), colorOrder.end(), 
+              [this](const ColorInfo& a, const ColorInfo& b) {
+        return rgbToLuminosity(a.color) < rgbToLuminosity(b.color);
+    });
+    
+    // Write each color as a separate layer in order of luminosity
+    for (const auto& colorInfo : colorOrder) {
+        const auto& paths = colorPathsMap.at(colorInfo);
         
-        // Create a layer group for this color
+        // Create a layer group for this color with Inkscape layer attributes
         svg << "  <g id=\"" << colorInfo.layerId.toStdString() << "\" "
+            << "inkscape:groupmode=\"layer\" "
+            << "inkscape:label=\"" << colorInfo.layerId.toStdString() << " (" 
+            << rgbToLuminosity(colorInfo.color) << ")\" "
+            << "style=\"display:inline\" "
             << "fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() << "\">\n";
         
         // Always use Inkscape-optimized format
@@ -592,14 +982,16 @@ void BitmapConverter::writeColorLayersSvg(std::ofstream& svg,
                             svg << " " << segment.x2 << "," << segment.y2;
                         }
                         svg << "\" fill=\"none\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                            << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                            << "\" stroke-width=\"" << path.strokeWidth 
+                            << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                     } else {
                         // For non-continuous zigzag, use individual lines
                         for (const auto& segment : path.segments) {
                             svg << "      <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                 << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
                                 << "\" stroke=\"" << colorInfo.svgColor.toStdString() 
-                                << "\" stroke-width=\"" << path.strokeWidth << "\" />\n";
+                                << "\" stroke-width=\"" << path.strokeWidth 
+                                << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                         }
                     }
                 }
@@ -763,7 +1155,7 @@ void BitmapConverter::processChunk(
     std::cout << " (" << (processedPixels * 1000.0 / elapsed) << " pixels/sec)" << std::endl;
 }
 
-// Main conversion function with multithreading support - Fixed document and pixel size handling
+// Main conversion function with multithreading support and enhanced optimizations
 void BitmapConverter::convert(
    const std::string& inputFile, 
    const std::string& outputFile,
@@ -803,6 +1195,16 @@ void BitmapConverter::convert(
    std::cout << "Margin: " << params.margin << " " << (params.units == Units::Inches ? "inches" : "mm") << std::endl;
    std::cout << "Optimize: " << (params.optimize ? "Yes" : "No") << std::endl;
    std::cout << "Thread count: " << params.numThreads << " (" << (params.numThreads == 0 ? "Auto" : "Manual") << ")" << std::endl;
+   std::cout << "Minimize travel: " << (params.minimizeTravel ? "Yes" : "No") << std::endl;
+   std::cout << "Simplify paths: " << (params.simplifyPaths ? "Yes" : "No") << std::endl;
+   
+   if (params.colorMode == ColorMode::PreserveColors) {
+       std::cout << "Optimize color order: " << (params.optimizeColorOrder ? "Yes" : "No") << std::endl;
+       std::cout << "Group similar colors: " << (params.groupSimilarColors ? "Yes" : "No") << std::endl;
+       if (params.groupSimilarColors) {
+           std::cout << "Color similarity threshold: " << params.colorSimilarityThreshold << std::endl;
+       }
+   }
    
    QImage img(QString::fromStdString(inputFile));
    if (img.isNull()) throw std::runtime_error("Failed to load image");
@@ -1044,6 +1446,20 @@ void BitmapConverter::convert(
    qint64 processingTime = processTimer.elapsed();
    std::cout << "All threads finished. Processing time: " << processingTime << " ms" << std::endl;
    
+   // Group similar colors if requested
+   if (params.colorMode == ColorMode::PreserveColors && params.groupSimilarColors) {
+       QElapsedTimer groupTimer;
+       groupTimer.start();
+       
+       std::cout << "Grouping similar colors with threshold: " << params.colorSimilarityThreshold << std::endl;
+       std::cout << "Before grouping: " << context.colorPaths.size() << " unique colors" << std::endl;
+       
+       context.colorPaths = groupSimilarColors(context.colorPaths, params.colorSimilarityThreshold);
+       
+       std::cout << "After grouping: " << context.colorPaths.size() << " unique colors" << std::endl;
+       std::cout << "Color grouping time: " << groupTimer.elapsed() << " ms" << std::endl;
+   }
+   
    // Start SVG writing timer
    QElapsedTimer svgTimer;
    svgTimer.start();
@@ -1054,27 +1470,44 @@ void BitmapConverter::convert(
    std::ofstream svg(outputFile);
    if (!svg) throw std::runtime_error("Failed to create output file");
 
-   // Write SVG header with total dimensions including margin and explicit units
+   // Write enhanced SVG header with total dimensions including margin and explicit units
    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n";
    
    // Calculate dimensions in inches for Inkscape compatibility
    double docWidthInches = totalWidth / 72.0;
    double docHeightInches = totalHeight / 72.0;
    
-   svg << "<!-- Created with Bitmap Converter (Inkscape optimized) -->\n";
+   // Enhanced SVG header with additional Inkscape-specific attributes
+   svg << "<!-- Created with Bitmap Converter (Optimized for Inkscape and efficient plotting) -->\n";
    svg << "<svg xmlns:svg=\"http://www.w3.org/2000/svg\" "
        << "xmlns=\"http://www.w3.org/2000/svg\" "
        << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
        << "xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\" "
+       << "xmlns:sodipodi=\"http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd\" "
        << "width=\"" << docWidthInches << "in\" "
        << "height=\"" << docHeightInches << "in\" "
        << "viewBox=\"0 0 " << totalWidth << " " << totalHeight << "\" "
-       << "inkscape:version=\"1.0\" "
+       << "inkscape:version=\"1.2\" "
        << "inkscape:document-units=\"in\" "
        << "version=\"1.1\">\n";
-   svg << "<title>Bitmap Conversion</title>\n";
-   svg << "<desc>Converted from " << inputFile << " with " << params.margin << " " 
-       << (params.units == Units::Inches ? "inch" : "mm") << " margin</desc>\n";
+
+   // Enhanced metadata for Inkscape
+   svg << "  <sodipodi:namedview "
+       << "pagecolor=\"#ffffff\" "
+       << "bordercolor=\"#666666\" "
+       << "borderopacity=\"1.0\" "
+       << "inkscape:pageopacity=\"0.0\" "
+       << "inkscape:pageshadow=\"2\" "
+       << "inkscape:document-units=\"in\" "
+       << "units=\"in\" "
+       << "showgrid=\"false\" "
+       << "fit-margin-top=\"0\" "
+       << "fit-margin-left=\"0\" "
+       << "fit-margin-right=\"0\" "
+       << "fit-margin-bottom=\"0\" "
+       << "inkscape:pagecheckerboard=\"0\" "
+       << "inkscape:deskcolor=\"#d1d1d1\" "
+       << "/>\n";
 
    // Add metadata to ensure proper document size
    svg << "<metadata>\n";
@@ -1100,7 +1533,8 @@ void BitmapConverter::convert(
 
     // Create a transform that centers content within the margins
     svg << "<g transform=\"translate(" << xOffset << "," << yOffset << ")\" "
-        << "inkscape:label=\"Centered Content with Margin\">\n";
+        << "inkscape:label=\"Centered Content with Margin\" "
+        << "inkscape:groupmode=\"layer\">\n";
    
    // Optional: Add a background rectangle to visualize the content area
    svg << "  <!-- Content area outline for debugging -->\n";
@@ -1118,6 +1552,17 @@ void BitmapConverter::convert(
        std::vector<std::vector<PathSegment>>& allPaths = context.paths;
        std::cout << "Monochrome paths generated: " << allPaths.size() << std::endl;
        
+       // Apply path reordering for minimal travel if requested
+       if (params.minimizeTravel && !allPaths.empty()) {
+           QElapsedTimer travelTimer;
+           travelTimer.start();
+           
+           std::cout << "Reordering paths to minimize travel distance..." << std::endl;
+           allPaths = reorderPathsForMinimalTravel(allPaths);
+           
+           std::cout << "Path reordering complete. Time: " << travelTimer.elapsed() << " ms" << std::endl;
+       }
+       
        // Write optimized or unoptimized paths
        if (params.optimize) {
            std::cout << "Optimizing paths with " << numThreads << " threads..." << std::endl;
@@ -1129,13 +1574,14 @@ void BitmapConverter::convert(
        } else {
            // Code for non-optimized path output - always using Inkscape optimized format
            // Group all outline segments
-           svg << "  <g id=\"outlines\">\n";
+           svg << "  <g id=\"outlines\" inkscape:groupmode=\"layer\" inkscape:label=\"Outlines\">\n";
            for (const auto& pixelPaths : allPaths) {
                for (size_t i = 0; i < std::min<size_t>(4, pixelPaths.size()); i++) {
                    const auto& segment = pixelPaths[i];
                    svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                        << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                       << "\" stroke=\"black\" stroke-width=\"" << strokeWidth 
+                       << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                }
            }
            svg << "  </g>\n";
@@ -1150,14 +1596,15 @@ void BitmapConverter::convert(
            }
            
            if (hasFills) {
-               svg << "  <g id=\"fills\">\n";
+               svg << "  <g id=\"fills\" inkscape:groupmode=\"layer\" inkscape:label=\"Fills\">\n";
                for (const auto& pixelPaths : allPaths) {
                    if (pixelPaths.size() > 4) {
                        for (size_t i = 4; i < pixelPaths.size(); i++) {
                            const auto& segment = pixelPaths[i];
                            svg << "    <line x1=\"" << segment.x1 << "\" y1=\"" << segment.y1
                                << "\" x2=\"" << segment.x2 << "\" y2=\"" << segment.y2
-                               << "\" stroke=\"black\" stroke-width=\"" << strokeWidth << "\"/>\n";
+                               << "\" stroke=\"black\" stroke-width=\"" << strokeWidth 
+                               << "\" style=\"vector-effect:non-scaling-stroke\" />\n";
                        }
                    }
                }
@@ -1165,9 +1612,23 @@ void BitmapConverter::convert(
            }
        }
    } else {
-       // Handle color processing
+       // Handle color processing with enhancements
        std::map<ColorInfo, std::vector<std::vector<PathSegment>>>& pathsByColor = context.colorPaths;
        std::cout << "Color mode - unique colors found: " << pathsByColor.size() << std::endl;
+       
+       // Apply color path reordering for minimal travel if requested
+       if (params.minimizeTravel) {
+           QElapsedTimer travelTimer;
+           travelTimer.start();
+           
+           std::cout << "Reordering color paths to minimize travel distance..." << std::endl;
+           
+           for (auto& pair : pathsByColor) {
+               pair.second = reorderPathsForMinimalTravel(pair.second);
+           }
+           
+           std::cout << "Color path reordering complete. Time: " << travelTimer.elapsed() << " ms" << std::endl;
+       }
        
        // Optimize paths by color and write to SVG
        std::map<ColorInfo, std::vector<OptimizedPath>> optimizedPathsByColor;
@@ -1242,6 +1703,8 @@ void BitmapConverter::convert(
    std::cout << "Total conversion time: " << totalTime << " ms\n";
    std::cout << "- Processing time: " << processingTime << " ms (" 
              << (processingTime * 100 / totalTime) << "%)\n";
+   std::cout << "- Optimization time: " << optimizeTimer.elapsed() << " ms (" 
+             << (optimizeTimer.elapsed() * 100 / totalTime) << "%)\n";
    std::cout << "- SVG writing time: " << svgWriteTime << " ms (" 
              << (svgWriteTime * 100 / totalTime) << "%)\n";
    std::cout << "Threads used: " << numThreads << "\n";
@@ -1249,5 +1712,8 @@ void BitmapConverter::convert(
    std::cout << "Margin: " << params.margin << " " 
              << (params.units == Units::Inches ? "inches" : "mm") << "\n";
    std::cout << "Total document size: " << (totalWidth/72) << "x" << (totalHeight/72) << " inches\n";
+   std::cout << "Optimization: " << (params.optimize ? "Enabled" : "Disabled") << "\n";
+   std::cout << "Minimize travel: " << (params.minimizeTravel ? "Enabled" : "Disabled") << "\n";
+   std::cout << "Simplify paths: " << (params.simplifyPaths ? "Enabled" : "Disabled") << "\n";
    std::cout << "========================================\n";
 }

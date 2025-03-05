@@ -4,6 +4,8 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QLabel>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { 
@@ -55,6 +57,21 @@ private slots:
     void updateAngleInput();
     
     /**
+     * @brief Updates visibility of controls based on the color mode
+     */
+    void updateColorModeOptions();
+    
+    /**
+     * @brief Updates visibility of path simplification options
+     */
+    void updatePathSimplificationOptions();
+    
+    /**
+     * @brief Updates visibility of similar color grouping options
+     */
+    void updateSimilarColorOptions();
+    
+    /**
      * @brief Saves current UI settings to persistent storage
      * This is called automatically when UI elements change
      */
@@ -76,4 +93,16 @@ private:
     QSettings settings;          ///< Persistent settings storage
     QSpinBox *threadCountSpinBox; ///< Control for thread count
     QLabel *threadCountLabel;    ///< Label for thread count control
+    
+    // New UI elements for enhanced optimization
+    QCheckBox *minimizeTravelCheckbox;      ///< Checkbox for minimizing travel
+    QCheckBox *simplifyPathsCheckbox;       ///< Checkbox for path simplification
+    QDoubleSpinBox *simplifyToleranceInput; ///< Input for simplification tolerance
+    QLabel *simplifyToleranceLabel;         ///< Label for simplification tolerance
+    
+    // Color-specific optimization controls
+    QCheckBox *optimizeColorOrderCheckbox;  ///< Checkbox for optimizing color order
+    QCheckBox *groupSimilarColorsCheckbox;  ///< Checkbox for grouping similar colors
+    QDoubleSpinBox *colorSimilarityInput;   ///< Input for color similarity threshold
+    QLabel *colorSimilarityLabel;           ///< Label for color similarity threshold
 };
