@@ -7,6 +7,7 @@
 #include <limits>
 #include <cmath>
 #include <functional>
+#include <thread>
 
 // Check if line segments can connect
 bool PathOptimizer::canConnect(const PathSegment& s1, const PathSegment& s2) {
@@ -226,43 +227,255 @@ std::vector<OptimizedPath> PathOptimizer::optimizeColorPaths(
     return result;
 }
 
-// Path reordering to minimize travel distance
+// Original Path reordering implementation - kept for backwards compatibility
 std::vector<std::vector<PathSegment>> PathOptimizer::reorderPathsForMinimalTravel(
     const std::vector<std::vector<PathSegment>>& paths) {
     
-    if (paths.size() <= 1) return paths;
+    return reorderPathsForMinimalTravel(paths, 0);
+}
+
+// Improved reorderPathsForMinimalTravel with parallel processing
+std::vector<std::vector<PathSegment>> PathOptimizer::reorderPathsForMinimalTravel(
+    const std::vector<std::vector<PathSegment>>& paths, int numThreads) {
     
+    // Early exit for empty or single path
+    if (paths.size() <= 1) return paths;
+
+    // Determine number of threads to use
+    if (numThreads <= 0) {
+        // Auto-detect threads, but limit based on problem size
+        numThreads = std::min(
+            static_cast<int>(std::thread::hardware_concurrency()), 
+            static_cast<int>(paths.size() / 100 + 1)
+        );
+        // Ensure at least 1 thread and not more than 8 for reasonable overhead
+        numThreads = std::max(1, std::min(numThreads, 8)); 
+    }
+    
+    std::cout << "Path reordering using " << numThreads << " threads for " 
+              << paths.size() << " paths" << std::endl;
+    
+    // For small path counts or single threading, use enhanced algorithm directly
+    if (numThreads == 1 || paths.size() < 200) {
+        // Find optimized path order
+        std::vector<int> bestOrder(paths.size());
+        for (int i = 0; i < bestOrder.size(); i++) {
+            bestOrder[i] = i;
+        }
+        
+        double totalDistance = calculateTotalDistance(paths, bestOrder);
+        
+        // Try different starting points with enhanced nearest neighbor + 2-opt
+        findBetterPathOrdering(paths, 0, nullptr, nullptr, &bestOrder);
+        
+        // Apply final 2-opt improvement
+        apply2OptImprovement(paths, bestOrder, totalDistance);
+        
+        // Build result using the optimal order
+        std::vector<std::vector<PathSegment>> result;
+        result.reserve(paths.size());
+        for (int idx : bestOrder) {
+            result.push_back(paths[idx]);
+        }
+        return result;
+    }
+    
+    // Parallel approach for larger path counts
+    std::vector<std::thread> threads;
+    std::mutex mutex;
+    std::vector<int> bestOrder(paths.size());
+    double bestDistance = std::numeric_limits<double>::max();
+    
+    // Initialize with sequential ordering
+    for (int i = 0; i < bestOrder.size(); i++) {
+        bestOrder[i] = i;
+    }
+    
+    // Distribute starting points among threads
+    int pathsPerThread = static_cast<int>(paths.size()) / numThreads;
+    for (int t = 0; t < numThreads; t++) {
+        int startIdx = t * pathsPerThread;
+        threads.push_back(std::thread(&PathOptimizer::findBetterPathOrdering, this,
+                                      std::ref(paths), startIdx, &mutex, 
+                                      &bestDistance, &bestOrder));
+    }
+    
+    // Wait for all threads to complete
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    
+    // Build result using the optimal order
     std::vector<std::vector<PathSegment>> result;
+    result.reserve(paths.size());
+    for (int idx : bestOrder) {
+        result.push_back(paths[idx]);
+    }
+    
+    return result;
+}
+
+// Find better path ordering with enhanced nearest neighbor + 2-opt improvement
+void PathOptimizer::findBetterPathOrdering(
+    const std::vector<std::vector<PathSegment>>& paths,
+    int startIdx,
+    std::mutex* mutex,
+    double* sharedBestDistance,
+    std::vector<int>* sharedBestOrder) {
+    
+    std::vector<int> order(paths.size());
     std::vector<bool> used(paths.size(), false);
     
-    // Start with the first path
-    result.push_back(paths[0]);
-    used[0] = true;
+    // Start with the specified index
+    order[0] = startIdx;
+    used[startIdx] = true;
     
-    // Nearest neighbor algorithm to find next closest path
-    while (result.size() < paths.size()) {
-        const auto& lastPath = result.back();
-        double minDistance = std::numeric_limits<double>::max();
-        int bestIndex = -1;
+    // Enhanced nearest neighbor algorithm
+    // Build a path by selecting the closest unused path at each step
+    for (size_t pos = 1; pos < paths.size(); pos++) {
+        int lastIdx = order[pos-1];
+        const auto& lastPath = paths[lastIdx];
         
-        // Find the closest unused path
+        double minDistance = std::numeric_limits<double>::max();
+        int bestNextIdx = -1;
+        
+        // Look ahead by considering not just the closest path
+        // but also how that choice affects the next step
         for (size_t i = 0; i < paths.size(); i++) {
             if (!used[i]) {
-                double distance = calculatePathDistance(lastPath, paths[i]);
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    bestIndex = i;
+                // Calculate direct distance to this candidate
+                double directDist = calculatePathDistance(lastPath, paths[i]);
+                
+                // Look ahead coefficient reduces with path count to avoid excessive computation
+                double lookAheadCoeff = std::min(1.0, 10.0 / paths.size());
+                double lookAheadBonus = 0.0;
+                
+                // Consider each potential next step from this candidate
+                if (lookAheadCoeff > 0.01) {  // Only do lookahead if coefficient is significant
+                    double minNextDist = std::numeric_limits<double>::max();
+                    for (size_t j = 0; j < paths.size(); j++) {
+                        if (!used[j] && j != i) {
+                            double nextDist = calculatePathDistance(paths[i], paths[j]);
+                            minNextDist = std::min(minNextDist, nextDist);
+                        }
+                    }
+                    // Add a bonus for candidates that are close to other unused paths
+                    lookAheadBonus = lookAheadCoeff * minNextDist;
+                }
+                
+                // Combine direct distance with lookahead bonus
+                double combinedScore = directDist + lookAheadBonus;
+                
+                if (combinedScore < minDistance) {
+                    minDistance = combinedScore;
+                    bestNextIdx = i;
                 }
             }
         }
         
-        if (bestIndex >= 0) {
-            result.push_back(paths[bestIndex]);
-            used[bestIndex] = true;
+        if (bestNextIdx >= 0) {
+            order[pos] = bestNextIdx;
+            used[bestNextIdx] = true;
         }
     }
     
-    return result;
+    // Calculate total distance for this ordering
+    double totalDistance = calculateTotalDistance(paths, order);
+    
+    // Apply 2-opt improvement to the path ordering
+    bool improved = true;
+    int iterations = 0;
+    int maxIterations = static_cast<int>(paths.size() * 0.5); // Limit iterations based on problem size
+    
+    while (improved && iterations < maxIterations) {
+        improved = apply2OptImprovement(paths, order, totalDistance);
+        iterations++;
+    }
+    
+    // If using parallel processing, update shared best solution if better
+    if (mutex && sharedBestDistance && sharedBestOrder) {
+        std::lock_guard<std::mutex> lock(*mutex);
+        if (totalDistance < *sharedBestDistance) {
+            *sharedBestDistance = totalDistance;
+            *sharedBestOrder = order;
+        }
+    } else if (sharedBestOrder) {
+        // Single-threaded mode - just update the best order
+        *sharedBestOrder = order;
+    }
+}
+
+// Apply 2-opt improvement to path ordering
+bool PathOptimizer::apply2OptImprovement(
+    const std::vector<std::vector<PathSegment>>& paths,
+    std::vector<int>& order,
+    double& totalDistance) {
+    
+    bool improved = false;
+    
+    // Determine how many paths to check - for large path counts, check a subset
+    // to maintain reasonable performance
+    int pathsToCheck = static_cast<int>(paths.size());
+    if (paths.size() > 500) {
+        pathsToCheck = 500 + static_cast<int>(sqrt(paths.size() - 500));
+    }
+    
+    // Try swapping segments to find improvements
+    for (int i = 0; i < pathsToCheck - 1; i++) {
+        for (int j = i + 1; j < pathsToCheck; j++) {
+            // Skip adjacent paths as swapping them wouldn't change the order
+            if (j == i + 1) continue;
+            
+            // Calculate current segment distances
+            double d_before_i = (i > 0) ? 
+                calculatePathDistance(paths[order[i-1]], paths[order[i]]) : 0;
+            double d_i_next = calculatePathDistance(paths[order[i]], paths[order[i+1]]);
+            double d_before_j = calculatePathDistance(paths[order[j-1]], paths[order[j]]);
+            double d_j_next = (j < paths.size() - 1) ? 
+                calculatePathDistance(paths[order[j]], paths[order[j+1]]) : 0;
+            
+            // Calculate potential new segment distances
+            double d_before_j_first = (i > 0) ? 
+                calculatePathDistance(paths[order[i-1]], paths[order[j]]) : 0;
+            double d_j_i_next = calculatePathDistance(paths[order[j]], paths[order[i+1]]);
+            double d_before_i_next = calculatePathDistance(paths[order[j-1]], paths[order[i]]);
+            double d_i_j_next = (j < paths.size() - 1) ? 
+                calculatePathDistance(paths[order[i]], paths[order[j+1]]) : 0;
+            
+            // Calculate change in total distance if we swap these paths
+            double currentDist = d_before_i + d_i_next + d_before_j + d_j_next;
+            double newDist = d_before_j_first + d_j_i_next + d_before_i_next + d_i_j_next;
+            
+            // If the new arrangement is better, swap the paths
+            if (newDist < currentDist) {
+                std::swap(order[i], order[j]);
+                totalDistance = totalDistance - currentDist + newDist;
+                improved = true;
+                
+                // If we made a significant improvement, exit early and start the next
+                // iteration of the outer loop with this improved path
+                if ((currentDist - newDist) / currentDist > 0.1) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return improved;
+}
+
+// Calculate total distance for a given path order
+double PathOptimizer::calculateTotalDistance(
+    const std::vector<std::vector<PathSegment>>& paths,
+    const std::vector<int>& order) {
+    
+    double totalDistance = 0.0;
+    
+    for (size_t i = 0; i < order.size() - 1; i++) {
+        totalDistance += calculatePathDistance(paths[order[i]], paths[order[i+1]]);
+    }
+    
+    return totalDistance;
 }
 
 double PathOptimizer::calculatePathDistance(
@@ -447,7 +660,7 @@ std::vector<OptimizedPath> PathOptimizer::optimizePaths(
                 segments.push_back(path.segments);
             }
             
-            auto reorderedSegments = reorderPathsForMinimalTravel(segments);
+            auto reorderedSegments = reorderPathsForMinimalTravel(segments, numThreads);
             outlinePaths.clear();
             
             for (const auto& seg : reorderedSegments) {
@@ -533,7 +746,7 @@ std::vector<OptimizedPath> PathOptimizer::optimizePaths(
             segments.push_back(path.segments);
         }
         
-        auto reorderedSegments = reorderPathsForMinimalTravel(segments);
+        auto reorderedSegments = reorderPathsForMinimalTravel(segments, numThreads);
         outlinePaths.clear();
         
         for (const auto& seg : reorderedSegments) {

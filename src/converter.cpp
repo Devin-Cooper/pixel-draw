@@ -523,7 +523,8 @@ void BitmapConverter::convert(
            travelTimer.start();
            
            std::cout << "Reordering paths to minimize travel distance..." << std::endl;
-           allPaths = m_pathOptimizer->reorderPathsForMinimalTravel(allPaths);
+           // Use the enhanced algorithm with multi-threading
+           allPaths = m_pathOptimizer->reorderPathsForMinimalTravel(allPaths, numThreads);
            
            std::cout << "Path reordering complete. Time: " << travelTimer.elapsed() << " ms" << std::endl;
        }
@@ -565,7 +566,8 @@ void BitmapConverter::convert(
            std::cout << "Reordering color paths to minimize travel distance..." << std::endl;
            
            for (auto& pair : pathsByColor) {
-               pair.second = m_pathOptimizer->reorderPathsForMinimalTravel(pair.second);
+               // Use the enhanced algorithm with multi-threading
+               pair.second = m_pathOptimizer->reorderPathsForMinimalTravel(pair.second, numThreads);
            }
            
            std::cout << "Color path reordering complete. Time: " << travelTimer.elapsed() << " ms" << std::endl;

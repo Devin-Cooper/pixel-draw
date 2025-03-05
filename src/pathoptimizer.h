@@ -4,6 +4,7 @@
 #include <vector>
 #include <map>
 #include <QString>
+#include <mutex>
 
 /**
  * @brief Class for optimizing paths in the SVG output
@@ -51,6 +52,16 @@ public:
      */
     std::vector<std::vector<PathSegment>> reorderPathsForMinimalTravel(
         const std::vector<std::vector<PathSegment>>& paths);
+        
+    /**
+     * @brief Reorder paths to minimize travel distance using an improved algorithm
+     * @param paths Vector of path segments to reorder
+     * @param numThreads Number of threads to use (0 = auto)
+     * @return Reordered vector of path segments
+     */
+    std::vector<std::vector<PathSegment>> reorderPathsForMinimalTravel(
+        const std::vector<std::vector<PathSegment>>& paths, 
+        int numThreads);
     
     /**
      * @brief Format a path for Inkscape using SVG path syntax
@@ -103,4 +114,41 @@ private:
      */
     std::vector<PathSegment> pointsToSegments(
         const std::vector<std::pair<double, double>>& points);
+
+    /**
+     * @brief Find a better path ordering using enhanced nearest neighbor with 2-opt improvement
+     * @param paths Vector of path segments to reorder
+     * @param startIdx Starting path index (for parallel processing)
+     * @param mutex Mutex for thread-safe operation
+     * @param bestDistance Current best distance found (for parallel processing)
+     * @param bestOrder Current best ordering found (for parallel processing)
+     */
+    void findBetterPathOrdering(
+        const std::vector<std::vector<PathSegment>>& paths,
+        int startIdx,
+        std::mutex* mutex = nullptr,
+        double* bestDistance = nullptr,
+        std::vector<int>* bestOrder = nullptr);
+
+    /**
+     * @brief Applies 2-opt improvement to a path order
+     * @param paths Vector of path segments
+     * @param order Current path order
+     * @param totalDistance Current total distance
+     * @return true if improvement was made
+     */
+    bool apply2OptImprovement(
+        const std::vector<std::vector<PathSegment>>& paths,
+        std::vector<int>& order,
+        double& totalDistance);
+
+    /**
+     * @brief Calculate total travel distance for a given path order
+     * @param paths Vector of path segments
+     * @param order Path order
+     * @return Total travel distance
+     */
+    double calculateTotalDistance(
+        const std::vector<std::vector<PathSegment>>& paths,
+        const std::vector<int>& order);
 };
